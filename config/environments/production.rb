@@ -3,6 +3,8 @@
 require 'active_support/core_ext/integer/time'
 require 'active_support/core_ext/string'
 
+Rails.backtrace_cleaner.remove_silencers!
+
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
 
@@ -25,7 +27,7 @@ Rails.application.configure do
   config.action_controller.perform_caching = true
   config.active_record.sqlite3_production_warning = false
 
-  config.active_job.queue_adapter = :sidekiq if defined?(Sidekiq)
+  config.active_job.queue_adapter = :sidekiq
 
   # Ensures that a master key has been made available in either ENV["RAILS_MASTER_KEY"]
   # or in config/master.key. This key is used to decrypt credentials (and other encrypted files).
@@ -52,7 +54,7 @@ Rails.application.configure do
     end
 
   config.active_storage.resolve_model_to_route = :rails_storage_proxy if ENV['ACTIVE_STORAGE_PUBLIC'] != 'true'
-  config.active_storage.service_urls_expire_in = 15.minutes
+  config.active_storage.service_urls_expire_in = 4.hours
 
   # Mount Action Cable outside main process or domain.
   # config.action_cable.mount_path = nil
@@ -124,38 +126,32 @@ Rails.application.configure do
   config.lograge.enabled = true
   config.lograge.base_controller_class = ['ActionController::API', 'ActionController::Base']
 
-  if ENV['MULTITENANT'] == 'true'
-    config.lograge.formatter = ->(data) { data.except(:path, :location).to_json }
+  config.lograge.formatter = ->(data) { data.except(:path, :location).to_json }
 
-    config.lograge.custom_payload do |controller|
-      params =
-        begin
-          controller.request.try(:params) || {}
-        rescue StandardError
-          {}
-        end
+  config.lograge.custom_payload do |controller|
+    params =
+      begin
+        controller.request.try(:params) || {}
+      rescue StandardError
+        {}
+      end
 
-      {
-        fwd: controller.request.ip,
-        params: {
-          id: params[:id],
-          sig: (params[:signed_uuid] || params[:signed_id]).to_s.split('--').first,
-          slug: (params[:slug] ||
-                 params[:submitter_slug] ||
-                 params[:submission_slug] ||
-                 params[:template_slug]).to_s.last(5)
-        }.compact_blank,
-        host: controller.request.host,
-        uid: controller.instance_variable_get(:@current_user).try(:id)
-      }
-    end
-  else
-    config.lograge.formatter = Lograge::Formatters::Json.new
-
-    config.lograge.custom_payload do |controller|
-      {
-        fwd: controller.request.ip
-      }
-    end
+    {
+      fwd: controller.request.remote_ip,
+      params: {
+        id: params[:id],
+        template_id: params[:template_id],
+        submission_id: params[:submission_id],
+        submitter_id: params[:submitter_id],
+        sig: (params[:signed_uuid] || params[:signed_id]).to_s.split('--').first,
+        slug: (params[:slug] ||
+               params[:submitter_slug] ||
+               params[:submission_slug] ||
+               params[:submit_form_slug] ||
+               params[:template_slug]).to_s.first(5)
+      }.compact_blank,
+      host: controller.request.host,
+      uid: controller.instance_variable_get(:@current_user).try(:id)
+    }
   end
 end

@@ -2,7 +2,12 @@
 
 Rails.application.routes.draw do
   mount LetterOpenerWeb::Engine, at: '/letter_opener' if Rails.env.development?
-  mount Sidekiq::Web => '/sidekiq' if defined?(Sidekiq)
+
+  if !Docuseal.multitenant? && defined?(Sidekiq::Web)
+    authenticated :user, ->(u) { u.sidekiq? } do
+      mount Sidekiq::Web => '/jobs'
+    end
+  end
 
   root 'dashboard#index'
 
@@ -23,18 +28,28 @@ Rails.application.routes.draw do
   end
 
   namespace :api, defaults: { format: :json } do
+    resource :user, only: %i[show]
     resources :attachments, only: %i[create]
     resources :submitter_email_clicks, only: %i[create]
     resources :submitter_form_views, only: %i[create]
     resources :submitters, only: %i[index show update]
     resources :submissions, only: %i[index show create destroy] do
       collection do
+        resources :init, only: %i[create], controller: 'submissions'
         resources :emails, only: %i[create], controller: 'submissions', as: :submissions_emails
       end
     end
     resources :templates, only: %i[update show index destroy] do
       resources :clone, only: %i[create], controller: 'templates_clone'
       resources :submissions, only: %i[index create]
+    end
+    resources :tools, only: %i[] do
+      post :merge, on: :collection
+      post :verify, on: :collection
+    end
+    scope 'events' do
+      resources :form_events, only: %i[index], path: 'form/:type'
+      resources :submission_events, only: %i[index], path: 'submission/:type'
     end
   end
 
@@ -50,16 +65,19 @@ Rails.application.routes.draw do
   resources :enquiries, only: %i[create]
   resources :users, only: %i[new create edit update destroy]
   resource :user_signature, only: %i[edit update destroy]
+  resource :user_initials, only: %i[edit update destroy]
   resources :submissions_archived, only: %i[index], path: 'submissions/archived'
   resources :submissions, only: %i[index], controller: 'submissions_dashboard'
   resources :submissions, only: %i[show destroy]
   resources :console_redirect, only: %i[index]
   resources :upgrade, only: %i[index], controller: 'console_redirect'
+  resources :manage, only: %i[index], controller: 'console_redirect'
   resource :testing_account, only: %i[show destroy]
   resources :testing_api_settings, only: %i[index]
   resources :submitters_autocomplete, only: %i[index]
   resources :template_folders_autocomplete, only: %i[index]
   resources :webhook_preferences, only: %i[create]
+  resources :webhook_secret, only: %i[index create]
   resource :templates_upload, only: %i[create]
   authenticated do
     resource :templates_upload, only: %i[show], path: 'new'
@@ -69,14 +87,17 @@ Rails.application.routes.draw do
   resources :template_sharings_testing, only: %i[create]
   resources :templates, only: %i[index], controller: 'templates_dashboard'
   resources :templates, only: %i[new create edit update show destroy] do
+    resource :debug, only: %i[show], controller: 'templates_debug' if Rails.env.development?
     resources :documents, only: %i[create], controller: 'template_documents'
     resources :restore, only: %i[create], controller: 'templates_restore'
     resources :archived, only: %i[index], controller: 'templates_archived_submissions'
     resources :submissions, only: %i[new create]
     resource :folder, only: %i[edit update], controller: 'templates_folders'
     resource :preview, only: %i[show], controller: 'templates_preview'
+    resource :form, only: %i[show], controller: 'templates_form_preview'
     resource :code_modal, only: %i[show], controller: 'templates_code_modal'
     resource :preferences, only: %i[show create], controller: 'templates_preferences'
+    resources :recipients, only: %i[create], controller: 'templates_recipients'
     resources :submissions_export, only: %i[index new]
   end
   resources :preview_document_page, only: %i[show], path: '/preview/:signed_uuid'
@@ -104,8 +125,13 @@ Rails.application.routes.draw do
   end
 
   resources :submit_form, only: %i[show update], path: 's', param: 'slug' do
+    resources :values, only: %i[index], controller: 'submit_form_values'
+    resources :download, only: %i[index], controller: 'submit_form_download'
+    resources :decline, only: %i[create], controller: 'submit_form_decline'
     get :completed
   end
+
+  resources :submit_form_draw_signature, only: %i[show], path: 'p', param: 'slug'
 
   resources :submissions_preview, only: %i[show], path: 'e', param: 'slug' do
     get :completed
@@ -145,6 +171,8 @@ Rails.application.routes.draw do
       end
     end
   end
+
+  get '/js/:filename', to: 'embed_scripts#show', as: :embed_script
 
   ActiveSupport.run_load_hooks(:routes, self)
 end

@@ -3,10 +3,21 @@
     ref="areas"
     :steps="stepFields"
     :values="values"
+    :with-field-placeholder="withFieldPlaceholder"
+    :submitter="submitter"
+    :scroll-el="scrollEl"
+    :with-signature-id="withSignatureId"
     :attachments-index="attachmentsIndex"
     :with-label="!isAnonymousChecboxes && showFieldNames"
     :current-step="currentStepFields"
-    @focus-step="[saveStep(), goToStep($event, false, true), currentField.type !== 'checkbox' ? isFormVisible = true : '']"
+    :scroll-padding="scrollPadding"
+    @focus-step="[saveStep(), currentField.type !== 'checkbox' ? isFormVisible = true : '', goToStep($event, false, true)]"
+  />
+  <FieldAreas
+    :steps="readonlyConditionalFields.map((e) => [e])"
+    :values="readonlyConditionalFields.reduce((acc, f) => { acc[f.uuid] = f.default_value; return acc }, {})"
+    :submitter="submitter"
+    :submittable="false"
   />
   <FormulaFieldAreas
     v-if="formulaFields.length"
@@ -101,6 +112,7 @@
             v-model="values[currentField.uuid]"
             :show-field-names="showFieldNames"
             :field="currentField"
+            @submit="submitStep"
             @focus="scrollIntoField(currentField)"
           />
           <div v-else-if="currentField.type === 'select'">
@@ -310,6 +322,7 @@
             :key="currentField.uuid"
             v-model="values[currentField.uuid]"
             :field="currentField"
+            :dry-run="dryRun"
             :attachments-index="attachmentsIndex"
             :submitter-slug="submitterSlug"
             :show-field-names="showFieldNames"
@@ -320,14 +333,20 @@
             ref="currentStep"
             :key="currentField.uuid"
             v-model="values[currentField.uuid]"
+            :reason="values[currentField.preferences?.reason_field_uuid]"
             :field="currentField"
-            :previous-value="previousSignatureValueFor(currentField)"
+            :previous-value="previousSignatureValueFor(currentField) || previousSignatureValue"
             :with-typed-signature="withTypedSignature"
+            :remember-signature="rememberSignature"
             :attachments-index="attachmentsIndex"
+            :require-signing-reason="requireSigningReason"
             :button-text="buttonText"
+            :dry-run="dryRun"
             :with-disclosure="withDisclosure"
-            :submitter-slug="submitterSlug"
+            :with-qr-button="withQrButton"
+            :submitter="submitter"
             :show-field-names="showFieldNames"
+            @update:reason="values[currentField.preferences?.reason_field_uuid] = $event"
             @attached="attachments.push($event)"
             @start="scrollIntoField(currentField)"
             @minimize="isFormVisible = false"
@@ -338,6 +357,7 @@
             :key="currentField.uuid"
             v-model="values[currentField.uuid]"
             :field="currentField"
+            :dry-run="dryRun"
             :previous-value="previousInitialsValue"
             :attachments-index="attachmentsIndex"
             :show-field-names="showFieldNames"
@@ -351,6 +371,7 @@
             v-else-if="currentField.type === 'file'"
             :key="currentField.uuid"
             v-model="values[currentField.uuid]"
+            :dry-run="dryRun"
             :field="currentField"
             :attachments-index="attachmentsIndex"
             :submitter-slug="submitterSlug"
@@ -377,6 +398,7 @@
             v-model="values[currentField.uuid]"
             :field="currentField"
             :submitter-slug="submitterSlug"
+            :values="values"
             @attached="attachments.push($event)"
             @focus="scrollIntoField(currentField)"
             @submit="submitStep"
@@ -384,7 +406,7 @@
         </div>
         <div
           v-if="currentField.type !== 'payment' || submittedValues[currentField.uuid]"
-          :class="withDisclosure && currentField.type === 'signature' ? 'mt-2' : 'mt-6 md:mt-8'"
+          :class="currentField.type === 'signature' ? 'mt-2' : 'mt-6 md:mt-8'"
         >
           <button
             id="submit_form_button"
@@ -398,7 +420,7 @@
                 v-if="isSubmitting"
                 class="mr-1 animate-spin"
               />
-              <span v-else>
+              <span>
                 {{ buttonText }}
               </span><span
                 v-if="isSubmitting"
@@ -421,7 +443,7 @@
         :completed-button="completedRedirectUrl ? {} : completedButton"
         :completed-message="completedRedirectUrl ? {} : completedMessage"
         :with-send-copy-button="withSendCopyButton && !completedRedirectUrl"
-        :with-download-button="withDownloadButton && !completedRedirectUrl"
+        :with-download-button="withDownloadButton && !completedRedirectUrl && !dryRun"
         :with-confetti="withConfetti"
         :can-send-email="canSendEmail && !!submitter.email"
         :submitter-slug="submitterSlug"
@@ -437,7 +459,7 @@
             href="#"
             class="inline border border-base-300 h-3 w-3 rounded-full mx-1 mt-1"
             :class="{ 'bg-base-300': index === currentStep, 'bg-base-content': (index < currentStep && stepFields[index].every((f) => !f.required || ![null, undefined, ''].includes(values[f.uuid]))) || isCompleted, 'bg-white': index > currentStep }"
-            @click.prevent="isCompleted ? '' : [saveStep(), goToStep(step, true)]"
+            @click.prevent="isCompleted ? '' : [saveStep(), goToStep(index, true)]"
           />
         </div>
       </div>
@@ -526,6 +548,21 @@ export default {
       type: Object,
       required: true
     },
+    withSignatureId: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
+    scrollPadding: {
+      type: String,
+      required: false,
+      default: '-80px'
+    },
+    requireSigningReason: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     canSendEmail: {
       type: Boolean,
       required: false,
@@ -535,6 +572,16 @@ export default {
       type: Array,
       required: false,
       default: () => []
+    },
+    withFieldPlaceholder: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
+    scrollEl: {
+      type: Object,
+      required: false,
+      default: null
     },
     onComplete: {
       type: Function,
@@ -547,6 +594,11 @@ export default {
       type: Boolean,
       required: false,
       default: null
+    },
+    rememberSignature: {
+      type: Boolean,
+      required: false,
+      default: false
     },
     minimize: {
       type: Boolean,
@@ -578,6 +630,11 @@ export default {
       required: false,
       default: true
     },
+    withQrButton: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     withTypedSignature: {
       type: Boolean,
       required: false,
@@ -603,6 +660,11 @@ export default {
       required: false,
       default: ''
     },
+    previousSignatureValue: {
+      type: String,
+      required: false,
+      default: ''
+    },
     allowToSkip: {
       type: Boolean,
       required: false,
@@ -614,6 +676,11 @@ export default {
       default: true
     },
     isDemo: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
+    dryRun: {
       type: Boolean,
       required: false,
       default: false
@@ -675,6 +742,7 @@ export default {
       isFormVisible: this.expand !== false,
       showFillAllRequiredFields: false,
       currentStep: 0,
+      enableScrollIntoField: true,
       phoneVerifiedValues: {},
       orientation: screen?.orientation?.type,
       isSubmitting: false,
@@ -740,6 +808,9 @@ export default {
     currentField () {
       return this.currentStepFields[0]
     },
+    readonlyConditionalFields () {
+      return this.fields.filter((f) => f.readonly && f.conditions?.length && this.checkFieldConditions(f))
+    },
     stepFields () {
       return this.fields.filter((f) => !f.readonly).reduce((acc, f) => {
         const prevStep = acc[acc.length - 1]
@@ -756,7 +827,7 @@ export default {
       }, [])
     },
     formulaFields () {
-      return this.fields.filter((f) => f.preferences?.formula)
+      return this.fields.filter((f) => f.preferences?.formula && f.type !== 'payment')
     },
     attachmentsIndex () {
       return this.attachments.reduce((acc, a) => {
@@ -774,7 +845,7 @@ export default {
       this.isFormVisible = value
     },
     currentStepFields (value) {
-      if (isEmpty(value)) {
+      if (isEmpty(value) && this.currentStep > 0) {
         this.currentStep -= 1
       }
     }
@@ -841,12 +912,14 @@ export default {
     this.$nextTick(() => {
       this.recalculateButtonDisabledKey = Math.random()
 
-      Promise.all([
-        this.maybeTrackEmailClick(),
-        this.maybeTrackSmsClick()
-      ]).finally(() => {
-        this.trackViewForm()
-      })
+      if (!this.dryRun) {
+        Promise.all([
+          this.maybeTrackEmailClick(),
+          this.maybeTrackSmsClick()
+        ]).finally(() => {
+          this.trackViewForm()
+        })
+      }
     })
   },
   methods: {
@@ -859,18 +932,22 @@ export default {
     checkFieldConditions (field) {
       if (field.conditions?.length) {
         return field.conditions.reduce((acc, c) => {
+          const field = this.fieldsUuidIndex[c.field_uuid]
+
+          if (['not_empty', 'checked', 'equal', 'contains'].includes(c.action) && field && !this.checkFieldConditions(field)) {
+            return false
+          }
+
           if (['empty', 'unchecked'].includes(c.action)) {
             return acc && isEmpty(this.values[c.field_uuid])
           } else if (['not_empty', 'checked'].includes(c.action)) {
             return acc && !isEmpty(this.values[c.field_uuid])
-          } else if (['equal', 'contains'].includes(c.action)) {
-            const field = this.fieldsUuidIndex[c.field_uuid]
+          } else if (['equal', 'contains'].includes(c.action) && field) {
             const option = field.options.find((o) => o.uuid === c.value)
             const values = [this.values[c.field_uuid]].flat()
 
             return acc && values.includes(this.optionValue(option, field.options.indexOf(option)))
-          } else if (['not_equal', 'does_not_contain'].includes(c.action)) {
-            const field = this.fieldsUuidIndex[c.field_uuid]
+          } else if (['not_equal', 'does_not_contain'].includes(c.action) && field) {
             const option = field.options.find((o) => o.uuid === c.value)
             const values = [this.values[c.field_uuid]].flat()
 
@@ -960,21 +1037,25 @@ export default {
         return null
       }
     },
-    goToStep (step, scrollToArea = false, clickUpload = false) {
-      this.currentStep = this.stepFields.indexOf(step)
+    goToStep (stepIndex, scrollToArea = false, clickUpload = false) {
+      this.currentStep = stepIndex
       this.showFillAllRequiredFields = false
 
       this.$nextTick(() => {
         this.recalculateButtonDisabledKey = Math.random()
 
-        if (scrollToArea) {
-          this.scrollIntoField(step[0])
+        if (!this.isCompleted) {
+          if (scrollToArea) {
+            this.scrollIntoField(this.currentField)
+          }
 
+          this.enableScrollIntoField = false
           this.$refs.form.querySelector('input[type="date"], input[type="number"], input[type="text"], select')?.focus()
-        }
+          this.enableScrollIntoField = true
 
-        if (clickUpload && !this.values[this.currentField.uuid] && ['file', 'image'].includes(this.currentField.type)) {
-          this.$refs.form.querySelector('input[type="file"]')?.click()
+          if (clickUpload && !this.values[this.currentField.uuid] && ['file', 'image'].includes(this.currentField.type)) {
+            this.$refs.form.querySelector('input[type="file"]')?.click()
+          }
         }
       })
     },
@@ -982,7 +1063,13 @@ export default {
       const currentFieldUuids = this.currentStepFields.map((f) => f.uuid)
       const currentFieldType = this.currentField.type
 
-      if (this.isCompleted) {
+      if (this.dryRun) {
+        currentFieldUuids.forEach((fieldUuid) => {
+          this.submittedValues[fieldUuid] = this.values[fieldUuid]
+        })
+
+        return Promise.resolve({})
+      } else if (this.isCompleted) {
         return Promise.resolve({})
       } else {
         return fetch(this.baseUrl + this.submitPath, {
@@ -1004,7 +1091,9 @@ export default {
       }
     },
     scrollIntoField (field) {
-      return this.$refs.areas.scrollIntoField(field)
+      if (this.enableScrollIntoField) {
+        return this.$refs.areas.scrollIntoField(field)
+      }
     },
     scrollIntoArea (area) {
       return this.$refs.areas.scrollIntoArea(area)
@@ -1046,7 +1135,9 @@ export default {
           if (response.status === 422 || response.status === 500) {
             const data = await response.json()
 
-            alert(data.error || 'Value is invalid')
+            const i18nError = data.error ? this.t(data.error.replace(/\s+/g, '_').toLowerCase()) : ''
+
+            alert(i18nError !== data.error ? i18nError : (data.error || this.t('value_is_invalid')))
 
             return Promise.reject(new Error(data.error))
           }
@@ -1062,7 +1153,7 @@ export default {
               this.isFormVisible = false
             }
 
-            this.goToStep(nextStep, this.autoscrollFields)
+            this.goToStep(this.stepFields.indexOf(nextStep), this.autoscrollFields)
 
             if (emptyRequiredField === nextStep) {
               this.showFillAllRequiredFields = true

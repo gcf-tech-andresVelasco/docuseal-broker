@@ -65,13 +65,13 @@ module Api
 
       @template.update!(template_params)
 
-      SendTemplateUpdatedWebhookRequestJob.perform_later(@template)
+      SendTemplateUpdatedWebhookRequestJob.perform_async('template_id' => @template.id)
 
       render json: @template.as_json(only: %i[id updated_at])
     end
 
     def destroy
-      if params[:permanently] == 'true' && !Docuseal.multitenant?
+      if params[:permanently] == 'true'
         @template.destroy!
       else
         @template.update!(archived_at: Time.current)
@@ -95,8 +95,9 @@ module Api
     def template_params
       permitted_params = [
         :name,
+        :external_id,
         {
-          submitters: [%i[name uuid]],
+          submitters: [%i[name uuid is_requester linked_to_uuid email]],
           fields: [[:uuid, :submitter_uuid, :name, :type,
                     :required, :readonly, :default_value,
                     :title, :description,

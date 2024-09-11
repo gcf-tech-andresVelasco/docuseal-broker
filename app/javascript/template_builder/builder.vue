@@ -4,6 +4,31 @@
     class="mx-auto pl-3 md:pl-4 h-full"
   >
     <div
+      v-if="pendingFieldAttachmentUuids.length"
+      class="top-1.5 sticky h-0 z-20 max-w-2xl mx-auto"
+    >
+      <div class="alert border-base-content/30 py-2 px-2.5">
+        <IconInfoCircle
+          class="stroke-info shrink-0 w-6 h-6"
+        />
+        <span>{{ t('uploaded_pdf_contains_form_fields_keep_or_remove_them') }}</span>
+        <div>
+          <button
+            class="btn btn-sm"
+            @click.prevent="removePendingFields"
+          >
+            {{ t('remove') }}
+          </button>
+          <button
+            class="btn btn-sm btn-neutral text-white"
+            @click.prevent="save"
+          >
+            {{ t('keep') }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <div
       v-if="$slots.buttons || withTitle"
       id="title_container"
       class="flex justify-between py-1.5 items-center pr-4 top-0 z-10"
@@ -33,6 +58,7 @@
         />
         <template v-else>
           <a
+            v-if="withSignYourselfButton"
             :href="template.submitters.length > 1 ? `/templates/${template.id}/submissions/new?selfsign=true` : `/d/${template.slug}`"
             class="btn btn-primary btn-ghost text-base hidden md:flex"
             :target="template.submitters.length > 1 ? '' : '_blank'"
@@ -48,6 +74,7 @@
             </span>
           </a>
           <a
+            v-if="withSendButton"
             :href="`/templates/${template.id}/submissions/new?with_link=true`"
             data-turbo-frame="modal"
             class="white-button md:!px-6"
@@ -61,26 +88,66 @@
               {{ t('send') }}
             </span>
           </a>
-          <button
+          <span
             v-if="editable"
-            class="base-button"
-            :class="{ disabled: isSaving }"
-            v-bind="isSaving ? { disabled: true } : {}"
-            @click.prevent="onSaveClick"
+            class="flex"
           >
-            <IconInnerShadowTop
-              v-if="isSaving"
-              width="22"
-              class="animate-spin"
-            />
-            <IconDeviceFloppy
-              v-else
-              width="22"
-            />
-            <span class="hidden md:inline">
-              {{ t('save') }}
-            </span>
-          </button>
+            <button
+              class="base-button !rounded-r-none !pr-2"
+              :class="{ disabled: isSaving }"
+              v-bind="isSaving ? { disabled: true } : {}"
+              @click.prevent="onSaveClick"
+            >
+              <IconInnerShadowTop
+                v-if="isSaving"
+                width="22"
+                class="animate-spin"
+              />
+              <IconDeviceFloppy
+                v-else
+                width="22"
+              />
+              <span class="hidden md:inline">
+                {{ t('save') }}
+              </span>
+            </button>
+            <div class="dropdown dropdown-end">
+              <label
+                tabindex="0"
+                class="base-button !rounded-l-none !pl-1 !pr-2 !border-l-neutral-500"
+              >
+                <span class="text-sm align-text-top">
+                  <IconChevronDown class="w-5 h-5 flex-shrink-0" />
+                </span>
+              </label>
+              <ul
+                tabindex="0"
+                class="dropdown-content p-2 mt-2 shadow menu text-base bg-base-100 rounded-box text-right"
+              >
+                <li>
+                  <a
+                    :href="`/templates/${template.id}/form`"
+                    data-turbo="false"
+                    class="flex items-center justify-center space-x-2"
+                  >
+                    <IconEye class="w-6 h-6 flex-shrink-0" />
+                    <span class="whitespace-nowrap">Save and Preview</span>
+                  </a>
+                </li>
+                <li>
+                  <a
+                    :href="`/templates/${template.id}/preferences`"
+                    data-turbo-frame="modal"
+                    class="flex space-x-2"
+                    @click="closeDropdown"
+                  >
+                    <IconAdjustments class="w-6 h-6 flex-shrink-0" />
+                    <span class="whitespace-nowrap">Preferences</span>
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </span>
           <a
             v-else
             :href="`/templates/${template.id}`"
@@ -123,7 +190,7 @@
           @change="save"
         />
         <div
-          class="sticky bottom-0 py-2"
+          class="sticky bottom-0 py-2 space-y-2"
           :style="{ backgroundColor }"
         >
           <Upload
@@ -132,6 +199,22 @@
             :template-id="template.id"
             @success="updateFromUpload"
           />
+          <button
+            v-if="sortedDocuments.length && editable && withAddPageButton"
+            id="add_blank_page_button"
+            class="btn btn-outline w-full"
+            @click.prevent="addBlankPage"
+          >
+            <IconInnerShadowTop
+              v-if="isLoadingBlankPage"
+              class="animate-spin w-5 h-5"
+            />
+            <IconPlus
+              v-else
+              class="w-5 h-5"
+            />
+            {{ t('add_blank_page') }}
+          </button>
         </div>
       </div>
       <div
@@ -142,12 +225,30 @@
           ref="documents"
           class="pr-3.5 pl-0.5"
         >
-          <Dropzone
-            v-if="!sortedDocuments.length && withUploadButton"
-            :template-id="template.id"
-            :accept-file-types="acceptFileTypes"
-            @success="updateFromUpload"
-          />
+          <template v-if="!sortedDocuments.length && (withUploadButton || withAddPageButton)">
+            <Dropzone
+              v-if="withUploadButton"
+              :template-id="template.id"
+              :accept-file-types="acceptFileTypes"
+              @success="updateFromUpload"
+            />
+            <button
+              v-if="withAddPageButton"
+              id="add_blank_page_button"
+              class="btn btn-outline w-full mt-4"
+              @click.prevent="addBlankPage"
+            >
+              <IconInnerShadowTop
+                v-if="isLoadingBlankPage"
+                class="animate-spin w-5 h-5"
+              />
+              <IconPlus
+                v-else
+                class="w-5 h-5"
+              />
+              {{ t('add_blank_page') }}
+            </button>
+          </template>
           <template v-else>
             <template
               v-for="document in sortedDocuments"
@@ -159,9 +260,11 @@
                 :selected-submitter="selectedSubmitter"
                 :document="document"
                 :is-drag="!!dragField"
+                :input-mode="inputMode"
                 :default-fields="[...defaultRequiredFields, ...defaultFields]"
                 :allow-draw="!onlyDefinedFields"
                 :default-submitters="defaultSubmitters"
+                :with-field-placeholder="withFieldPlaceholder"
                 :draw-field="drawField"
                 :draw-field-type="drawFieldType"
                 :editable="editable"
@@ -188,7 +291,7 @@
             </template>
             <div
               v-if="sortedDocuments.length && isBreakpointLg && editable"
-              class="pb-4"
+              class="pb-4 space-y-2"
             >
               <Upload
                 v-if="withUploadButton"
@@ -196,6 +299,22 @@
                 :accept-file-types="acceptFileTypes"
                 @success="updateFromUpload"
               />
+              <button
+                v-if="withAddPageButton"
+                id="add_blank_page_button"
+                class="btn btn-outline w-full mt-4"
+                @click.prevent="addBlankPage"
+              >
+                <IconInnerShadowTop
+                  v-if="isLoadingBlankPage"
+                  class="animate-spin w-5 h-5"
+                />
+                <IconPlus
+                  v-else
+                  class="w-5 h-5"
+                />
+                {{ t('add_blank_page') }}
+              </button>
             </div>
           </template>
         </div>
@@ -223,7 +342,7 @@
                 {{ t('cancel') }}
               </button>
               <a
-                v-if="!drawField && !drawOption && !['stamp', 'signature', 'initials'].includes(drawField?.type || drawFieldType)"
+                v-if="!drawField && !drawOption && !['stamp', 'signature', 'initials', 'heading'].includes(drawField?.type || drawFieldType)"
                 href="#"
                 class="link block mt-3 text-sm"
                 @click.prevent="[addField(drawFieldType), drawField = null, drawOption = null, withSelectedFieldType ? '' : drawFieldType = '', showDrawField = false]"
@@ -296,7 +415,7 @@ import Contenteditable from './contenteditable'
 import DocumentPreview from './preview'
 import DocumentControls from './controls'
 import MobileFields from './mobile_fields'
-import { IconUsersPlus, IconDeviceFloppy, IconWritingSign, IconInnerShadowTop } from '@tabler/icons-vue'
+import { IconPlus, IconUsersPlus, IconDeviceFloppy, IconChevronDown, IconEye, IconWritingSign, IconInnerShadowTop, IconInfoCircle, IconAdjustments } from '@tabler/icons-vue'
 import { v4 } from 'uuid'
 import { ref, computed } from 'vue'
 import { en as i18nEn } from './i18n'
@@ -307,7 +426,9 @@ export default {
     Upload,
     Document,
     Fields,
+    IconInfoCircle,
     MobileDrawField,
+    IconPlus,
     IconWritingSign,
     MobileFields,
     Logo,
@@ -317,6 +438,9 @@ export default {
     IconInnerShadowTop,
     Contenteditable,
     IconUsersPlus,
+    IconChevronDown,
+    IconAdjustments,
+    IconEye,
     IconDeviceFloppy
   },
   provide () {
@@ -325,6 +449,7 @@ export default {
       save: this.save,
       t: this.t,
       currencies: this.currencies,
+      locale: this.locale,
       baseFetch: this.baseFetch,
       fieldTypes: this.fieldTypes,
       backgroundColor: this.backgroundColor,
@@ -348,7 +473,17 @@ export default {
       required: false,
       default: () => ({})
     },
+    withFieldPlaceholder: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     backgroundColor: {
+      type: String,
+      required: false,
+      default: ''
+    },
+    locale: {
       type: String,
       required: false,
       default: ''
@@ -358,10 +493,30 @@ export default {
       required: false,
       default: true
     },
+    withSendButton: {
+      type: Boolean,
+      required: false,
+      default: true
+    },
+    withSignYourselfButton: {
+      type: Boolean,
+      required: false,
+      default: true
+    },
+    inputMode: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     withHelp: {
       type: Boolean,
       required: false,
       default: true
+    },
+    withAddPageButton: {
+      type: Boolean,
+      required: false,
+      default: false
     },
     autosave: {
       type: Boolean,
@@ -509,10 +664,13 @@ export default {
     return {
       documentRefs: [],
       isBreakpointLg: false,
+      isLoadingBlankPage: false,
       isSaving: false,
       selectedSubmitter: null,
       showDrawField: false,
+      pendingFieldAttachmentUuids: [],
       drawField: null,
+      copiedArea: null,
       drawFieldType: null,
       drawOption: null,
       dragField: null
@@ -521,6 +679,20 @@ export default {
   computed: {
     selectedAreaRef: () => ref(),
     fieldsDragFieldRef: () => ref(),
+    defaultDateFormat () {
+      const isUsBrowser = Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US')
+      const isUsTimezone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).format(new Date()).match(/\s(?:CST|CDT|PST|PDT|EST|EDT)$/)
+
+      return this.localeDateFormats[this.locale] || ((isUsBrowser || isUsTimezone) ? 'MM/DD/YYYY' : 'DD/MM/YYYY')
+    },
+    localeDateFormats () {
+      return {
+        'de-DE': 'DD.MM.YYYY',
+        'fr-FR': 'DD/MM/YYYY',
+        'it-IT': 'DD/MM/YYYY',
+        'es-ES': 'DD/MM/YYYY'
+      }
+    },
     fieldAreasIndex () {
       const areas = {}
 
@@ -593,6 +765,12 @@ export default {
         document.querySelector('form[action="/auth/stripe_connect"]')?.closest('.dropdown')?.querySelector('label')?.focus()
       }
     })
+
+    this.template.schema.forEach((item) => {
+      if (item.pending_fields) {
+        this.pendingFieldAttachmentUuids.push(item.attachment_uuid)
+      }
+    })
   },
   unmounted () {
     document.removeEventListener('keyup', this.onKeyUp)
@@ -604,8 +782,18 @@ export default {
     this.documentRefs = []
   },
   methods: {
+    closeDropdown () {
+      document.activeElement.blur()
+    },
     t (key) {
       return this.i18n[key] || i18nEn[key] || key
+    },
+    removePendingFields () {
+      this.template.fields = this.template.fields.filter((f) => {
+        return this.template.schema.find((item) => item.attachment_uuid === f.attachment_uuid && item.pending_fields)
+      })
+
+      this.save()
     },
     addField (type, area = null) {
       const field = {
@@ -627,7 +815,7 @@ export default {
 
       if (type === 'date') {
         field.preferences = {
-          format: Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US') ? 'MM/DD/YYYY' : 'DD/MM/YYYY'
+          format: this.defaultDateFormat
         }
       }
 
@@ -660,7 +848,7 @@ export default {
 
         if (type === 'date') {
           field.preferences = {
-            format: Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US') ? 'MM/DD/YYYY' : 'DD/MM/YYYY'
+            format: this.defaultDateFormat
           }
         }
 
@@ -747,7 +935,57 @@ export default {
         event.preventDefault()
 
         this.undo()
+      } else if ((event.ctrlKey || event.metaKey) && event.key === 'c' && document.activeElement === document.body) {
+        event.preventDefault()
+
+        this.copiedArea = this.selectedAreaRef?.value
+      } else if ((event.ctrlKey || event.metaKey) && event.key === 'v' && this.copiedArea && document.activeElement === document.body) {
+        event.preventDefault()
+
+        this.pasteField()
+      } else if (this.selectedAreaRef.value && ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(event.key) && document.activeElement === document.body) {
+        event.preventDefault()
+
+        this.handleAreaArrows(event)
       }
+    },
+    handleAreaArrows (event) {
+      if (!this.editable) {
+        return
+      }
+
+      const area = this.selectedAreaRef.value
+      const documentRef = this.documentRefs.find((e) => e.document.uuid === area.attachment_uuid)
+      const page = documentRef.pageRefs[area.page].$refs.image
+      const rect = page.getBoundingClientRect()
+      const diff = (event.shiftKey ? 5.0 : 1.0)
+
+      if (event.key === 'ArrowRight' && event.altKey) {
+        area.w = Math.min(Math.max(area.w + diff / rect.width, 0), 1 - area.x)
+      } else if (event.key === 'ArrowLeft' && event.altKey) {
+        area.w = Math.min(Math.max(area.w - diff / rect.width, 0), 1 - area.x)
+      } else if (event.key === 'ArrowUp' && event.altKey) {
+        area.h = Math.min(Math.max(area.h - diff / rect.height, 0), 1 - area.y)
+      } else if (event.key === 'ArrowDown' && event.altKey) {
+        area.h = Math.min(Math.max(area.h + diff / rect.height, 0), 1 - area.y)
+      } else if (event.key === 'ArrowRight') {
+        area.x = Math.min(Math.max(area.x + diff / rect.width, 0), 1 - area.w)
+      } else if (event.key === 'ArrowLeft') {
+        area.x = Math.min(Math.max(area.x - diff / rect.width, 0), 1 - area.w)
+      } else if (event.key === 'ArrowUp') {
+        area.y = Math.min(Math.max(area.y - diff / rect.height, 0), 1 - area.h)
+      } else if (event.key === 'ArrowDown') {
+        area.y = Math.min(Math.max(area.y + diff / rect.height, 0), 1 - area.h)
+      }
+
+      this.debouncedSave()
+    },
+    debouncedSave () {
+      clearTimeout(this._saveTimeout)
+
+      this._saveTimeout = setTimeout(() => {
+        this.save()
+      }, 700)
     },
     removeArea (area) {
       const field = this.template.fields.find((f) => f.areas?.includes(area))
@@ -759,6 +997,39 @@ export default {
       }
 
       this.save()
+    },
+    pasteField () {
+      const field = this.template.fields.find((f) => f.areas?.includes(this.copiedArea))
+      const currentArea = this.selectedAreaRef?.value || this.copiedArea
+
+      if (field && currentArea) {
+        const area = {
+          ...JSON.parse(JSON.stringify(this.copiedArea)),
+          attachment_uuid: currentArea.attachment_uuid,
+          page: currentArea.page,
+          x: currentArea.x,
+          y: currentArea.y + currentArea.h * 1.3
+        }
+
+        if (['radio', 'multiple'].includes(field.type)) {
+          this.copiedArea.option_uuid ||= field.options[0].uuid
+          area.option_uuid = v4()
+
+          field.options.push({ uuid: area.option_uuid })
+
+          field.areas.push(area)
+        } else {
+          this.template.fields.push({
+            ...JSON.parse(JSON.stringify(field)),
+            uuid: v4(),
+            areas: [area]
+          })
+        }
+
+        this.selectedAreaRef.value = area
+
+        this.save()
+      }
     },
     pushUndo () {
       const stringData = JSON.stringify(this.template)
@@ -908,13 +1179,13 @@ export default {
           field.options = [{ value: '', uuid: v4() }]
         }
 
-        if (field.type === 'stamp') {
+        if (['stamp', 'heading'].includes(field.type)) {
           field.readonly = true
         }
 
         if (field.type === 'date') {
           field.preferences = {
-            format: Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US') ? 'MM/DD/YYYY' : 'DD/MM/YYYY'
+            format: this.defaultDateFormat
           }
         }
       }
@@ -990,6 +1261,46 @@ export default {
       }
 
       this.save()
+
+      document.activeElement?.blur()
+
+      if (field.type === 'heading') {
+        this.$nextTick(() => {
+          const documentRef = this.documentRefs.find((e) => e.document.uuid === area.attachment_uuid)
+          const areaRef = documentRef.pageRefs[area.page].areaRefs.find((ref) => ref.area === this.selectedAreaRef.value)
+
+          areaRef.focusValueInput()
+        })
+      }
+    },
+    addBlankPage () {
+      this.isLoadingBlankPage = true
+
+      const canvas = document.createElement('canvas')
+
+      canvas.width = 816
+      canvas.height = 1056
+
+      const ctx = canvas.getContext('2d')
+
+      ctx.fillStyle = 'white'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+      canvas.toBlob((blob) => {
+        const file = new File([blob], `Page ${this.template.schema.length + 1}.png`, { type: blob.type, lastModified: Date.now() })
+
+        const formData = new FormData()
+        formData.append('files[]', file)
+
+        this.baseFetch(`/templates/${this.template.id}/documents`, {
+          method: 'POST',
+          body: formData
+        }).then(async (resp) => {
+          this.updateFromUpload(await resp.json())
+        }).finally(() => {
+          this.isLoadingBlankPage = false
+        })
+      }, 'image/png')
     },
     updateFromUpload (data) {
       this.template.schema.push(...data.schema)
@@ -1022,6 +1333,18 @@ export default {
       }
 
       this.save()
+
+      data.documents.forEach((attachment) => {
+        if (attachment.metadata?.pdf?.fields?.length) {
+          this.pendingFieldAttachmentUuids.push(attachment.uuid)
+
+          attachment.metadata.pdf.fields.forEach((field) => {
+            field.submitter_uuid = this.selectedSubmitter.uuid
+
+            this.template.fields.push(field)
+          })
+        }
+      })
     },
     updateName (value) {
       this.template.name = value
@@ -1116,30 +1439,58 @@ export default {
       if (!this.isAllRequiredFieldsAdded) {
         e.preventDefault()
 
-        return alert(this.t('add_all_required_fields_to_continue'))
+        const fields = this.defaultRequiredFields?.filter((f) => {
+          return !this.template.fields?.some((field) => field.name === f.name)
+        })
+
+        if (fields?.length) {
+          return alert(this.t('add_all_required_fields_to_continue') + ': ' + fields.map((f) => f.name).join(', '))
+        }
       }
 
       if (!this.template.fields.length) {
         e.preventDefault()
 
         alert('Please draw fields to prepare the document.')
+      } else {
+        const submitterWithoutFields =
+          this.template.submitters.find((submitter) => !this.template.fields.some((f) => f.submitter_uuid === submitter.uuid))
+
+        if (submitterWithoutFields) {
+          e.preventDefault()
+
+          alert(`Please add fields for the ${submitterWithoutFields.name}. Or, remove the ${submitterWithoutFields.name} if not needed.`)
+        }
       }
     },
     onSaveClick () {
       if (!this.isAllRequiredFieldsAdded) {
-        return alert(this.t('add_all_required_fields_to_continue'))
+        const fields = this.defaultRequiredFields?.filter((f) => {
+          return !this.template.fields?.some((field) => field.name === f.name)
+        })
+
+        if (fields?.length) {
+          return alert(this.t('add_all_required_fields_to_continue') + ': ' + fields.map((f) => f.name).join(', '))
+        }
       }
 
-      if (this.template.fields.length) {
-        this.isSaving = true
-
-        this.save().then(() => {
-          window.Turbo.visit(`/templates/${this.template.id}`)
-        }).finally(() => {
-          this.isSaving = false
-        })
-      } else {
+      if (!this.template.fields.length) {
         alert('Please draw fields to prepare the document.')
+      } else {
+        const submitterWithoutFields =
+          this.template.submitters.find((submitter) => !this.template.fields.some((f) => f.submitter_uuid === submitter.uuid))
+
+        if (submitterWithoutFields) {
+          alert(`Please add fields for the ${submitterWithoutFields.name}. Or, remove the ${submitterWithoutFields.name} if not needed.`)
+        } else {
+          this.isSaving = true
+
+          this.save().then(() => {
+            window.Turbo.visit(`/templates/${this.template.id}`)
+          }).finally(() => {
+            this.isSaving = false
+          })
+        }
       }
     },
     scrollToArea (area) {
@@ -1160,6 +1511,8 @@ export default {
       })
     },
     save ({ force } = { force: false }) {
+      this.pendingFieldAttachmentUuids = []
+
       if (this.onChange) {
         this.onChange(this.template)
       }

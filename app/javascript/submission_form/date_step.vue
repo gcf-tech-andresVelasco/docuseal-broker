@@ -14,7 +14,9 @@
         />
         <template v-else>
           {{ field.name && showFieldNames ? field.name : t('date') }}
-          <template v-if="!field.required">({{ t('optional') }})</template>
+          <template v-if="!field.required">
+            ({{ t('optional') }})
+          </template>
         </template>
       </label>
       <button
@@ -41,6 +43,7 @@
         :required="field.required"
         type="date"
         :name="`values[${field.uuid}]`"
+        @keydown.enter="onEnter"
         @focus="$emit('focus')"
       >
     </div>
@@ -76,7 +79,7 @@ export default {
       default: ''
     }
   },
-  emits: ['update:model-value', 'focus'],
+  emits: ['update:model-value', 'focus', 'submit'],
   computed: {
     value: {
       set (value) {
@@ -88,6 +91,13 @@ export default {
     }
   },
   methods: {
+    onEnter (e) {
+      if (this.modelValue) {
+        e.preventDefault()
+
+        this.$emit('submit')
+      }
+    },
     setCurrentDate () {
       const inputEl = this.$refs.input
 

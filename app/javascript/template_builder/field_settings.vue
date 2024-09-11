@@ -53,6 +53,40 @@
     </label>
   </div>
   <div
+    v-if="['select', 'radio'].includes(field.type) && !defaultField"
+    class="py-1.5 px-1 relative"
+    @click.stop
+  >
+    <select
+      :placeholder="t('default_value')"
+      dir="auto"
+      class="select select-bordered select-xs w-full max-w-xs h-7 !outline-0 font-normal bg-transparent"
+      @change="[field.default_value = $event.target.value, !field.default_value && delete field.default_value, save()]"
+    >
+      <option
+        value=""
+        :selected="!field.default_value"
+      >
+        {{ t('none') }}
+      </option>
+      <option
+        v-for="(option, index) in field.options || []"
+        :key="option.uuid"
+        :value="option.value || `${t('option')} ${index + 1}`"
+        :selected="field.default_value === (option.value || `${t('option')} ${index + 1}`)"
+      >
+        {{ option.value || `${t('option')} ${index + 1}` }}
+      </option>
+    </select>
+    <label
+      :style="{ backgroundColor }"
+      class="absolute -top-1 left-2.5 px-1 h-4"
+      style="font-size: 8px"
+    >
+      {{ t('default_value') }}
+    </label>
+  </div>
+  <div
     v-if="['text', 'number'].includes(field.type) && !defaultField"
     class="py-1.5 px-1 relative"
     @click.stop
@@ -72,6 +106,66 @@
       style="font-size: 8px"
     >
       {{ t('default_value') }}
+    </label>
+  </div>
+  <div
+    v-if="['text', 'cells'].includes(field.type)"
+    class="py-1.5 px-1 relative"
+    @click.stop
+  >
+    <select
+      class="select select-bordered select-xs w-full max-w-xs h-7 !outline-0 font-normal bg-transparent"
+      @change="onChangeValidation"
+    >
+      <option
+        :selected="!field.validation"
+        value=""
+      >
+        {{ t('none') }}
+      </option>
+      <option
+        v-for="(key, value) in validations"
+        :key="key"
+        :selected="field.validation?.pattern ? value === field.validation.pattern : value === 'none'"
+        :value="value"
+      >
+        {{ t(key) }}
+      </option>
+      <option
+        :selected="field.validation && !validations[field.validation.pattern]"
+        :value="validations[field.validation?.pattern] || !field.validation?.pattern ? 'custom' : field.validation?.pattern"
+      >
+        {{ t('custom') }}
+      </option>
+    </select>
+    <label
+      :style="{ backgroundColor }"
+      class="absolute -top-1 left-2.5 px-1 h-4"
+      style="font-size: 8px"
+    >
+      {{ t('validation') }}
+    </label>
+  </div>
+  <div
+    v-if="['text', 'cells'].includes(field.type) && field.validation && !validations[field.validation.pattern]"
+    class="py-1.5 px-1 relative"
+    @click.stop
+  >
+    <input
+      ref="validationCustom"
+      v-model="field.validation.pattern"
+      :placeholder="t('regexp_validation')"
+      dir="auto"
+      class="input input-bordered input-xs w-full max-w-xs h-7 !outline-0 bg-transparent"
+      @blur="save"
+    >
+    <label
+      v-if="field.validation.pattern"
+      :style="{ backgroundColor }"
+      class="absolute -top-1 left-2.5 px-1 h-4"
+      style="font-size: 8px"
+    >
+      {{ t('regexp_validation') }}
     </label>
   </div>
   <div
@@ -264,7 +358,7 @@
     >
       <a
         href="#"
-        class="text-sm py-1 px-2"
+        class="text-sm py-1 px-2 group/1"
         @click.prevent="$emit('scroll-to', area)"
       >
         <IconShape
@@ -273,6 +367,11 @@
         />
         {{ t('page') }}
         <template v-if="template.schema.length > 1">{{ template.schema.findIndex((item) => item.attachment_uuid === area.attachment_uuid) + 1 }}-</template>{{ area.page + 1 }}
+        <IconX
+          :width="12"
+          class="group-hover/1:inline hidden"
+          @click.prevent.stop="[$emit('remove-area', area), $event.target.closest('.dropdown').querySelector('label').focus()]"
+        />
       </a>
     </li>
     <li v-if="!field.areas?.length || !['radio', 'multiple'].includes(field.type)">
@@ -305,7 +404,7 @@
 </template>
 
 <script>
-import { IconRouteAltLeft, IconShape, IconMathFunction, IconNewSection, IconInfoCircle, IconCopy } from '@tabler/icons-vue'
+import { IconRouteAltLeft, IconShape, IconX, IconMathFunction, IconNewSection, IconInfoCircle, IconCopy } from '@tabler/icons-vue'
 
 export default {
   name: 'FieldSettings',
@@ -315,7 +414,8 @@ export default {
     IconMathFunction,
     IconRouteAltLeft,
     IconCopy,
-    IconNewSection
+    IconNewSection,
+    IconX
   },
   inject: ['template', 'save', 't'],
   props: {
@@ -349,7 +449,7 @@ export default {
       default: true
     }
   },
-  emits: ['set-draw', 'scroll-to', 'click-formula', 'click-description', 'click-condition'],
+  emits: ['set-draw', 'scroll-to', 'click-formula', 'click-description', 'click-condition', 'remove-area'],
   data () {
     return {
     }
@@ -393,6 +493,17 @@ export default {
 
       return formats
     },
+    validations () {
+      return {
+        '^[0-9]{3}-[0-9]{2}-[0-9]{4}$': 'ssn',
+        '^[0-9]{2}-[0-9]{7}$': 'ein',
+        '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$': 'email',
+        '^https?://.*': 'url',
+        '^[0-9]{5}(?:-[0-9]{4})?$': 'zip',
+        '^[0-9]+$': 'numbers_only',
+        '^[a-zA-Z]+$': 'letters_only'
+      }
+    },
     sortedAreas () {
       return (this.field.areas || []).sort((a, b) => {
         return this.schemaAttachmentsIndexes[a.attachment_uuid] - this.schemaAttachmentsIndexes[b.attachment_uuid]
@@ -400,6 +511,20 @@ export default {
     }
   },
   methods: {
+    onChangeValidation (event) {
+      if (event.target.value === 'custom') {
+        this.field.validation = { pattern: '' }
+
+        this.$nextTick(() => this.$refs.validationCustom.focus())
+      } else if (event.target.value) {
+        this.field.validation ||= {}
+        this.field.validation.pattern = event.target.value
+      } else {
+        delete this.field.validation
+      }
+
+      this.save()
+    },
     copyToAllPages (field) {
       const areaString = JSON.stringify(field.areas[0])
 

@@ -11,6 +11,7 @@ module Submissions
     module_function
 
     def call(submitter)
+      return [] unless submitter
       return submitter.documents if ApplicationRecord.uncached { submitter.document_generation_events.complete.exists? }
 
       events =
@@ -54,7 +55,7 @@ module Submissions
             DocumentGenerationEvent.where(submitter:).order(:created_at).last
           end
 
-        break submitter.documents if last_event.event_name.in?(%w[complete fail])
+        break submitter.documents.reload if last_event.event_name.in?(%w[complete fail])
 
         raise WaitForCompleteTimeout if total_wait_time > CHECK_COMPLETE_TIMEOUT
       end

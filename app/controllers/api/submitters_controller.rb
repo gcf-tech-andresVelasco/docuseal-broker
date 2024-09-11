@@ -23,7 +23,9 @@ module Api
       )
 
       render json: {
-        data: submitters.map { |s| Submitters::SerializeForApi.call(s, with_template: true, with_events: true) },
+        data: submitters.map do |s|
+                Submitters::SerializeForApi.call(s, with_template: true, with_events: true, params:)
+              end,
         pagination: {
           count: submitters.size,
           next: submitters.last&.id,
@@ -35,7 +37,7 @@ module Api
     def show
       Submissions::EnsureResultGenerated.call(@submitter) if @submitter.completed_at?
 
-      render json: Submitters::SerializeForApi.call(@submitter, with_template: true, with_events: true)
+      render json: Submitters::SerializeForApi.call(@submitter, with_template: true, with_events: true, params:)
     end
 
     def update
@@ -66,14 +68,19 @@ module Api
       end
 
       if @submitter.completed_at?
-        ProcessSubmitterCompletionJob.perform_later(@submitter)
+        ProcessSubmitterCompletionJob.perform_async({ 'submitter_id' => @submitter.id })
       elsif normalized_params[:send_email] || normalized_params[:send_sms]
         Submitters.send_signature_requests([@submitter])
       end
 
       render json: Submitters::SerializeForApi.call(@submitter, with_template: false,
                                                                 with_urls: true,
-                                                                with_events: false)
+                                                                with_events: false,
+                                                                params:)
+    rescue Submitters::NormalizeValues::BaseError, DownloadUtils::UnableToDownload => e
+      Rollbar.warning(e) if defined?(Rollbar)
+
+      render json: { error: e.message }, status: :unprocessable_entity
     end
 
     def submitter_params
@@ -85,7 +92,7 @@ module Api
         { metadata: {}, values: {}, readonly_fields: [], message: %i[subject body],
           fields: [[:name, :uuid, :default_value, :value,
                     :readonly, :redacted, :validation_pattern, :invalid_message,
-                    { default_value: [], value: [] }]] }
+                    { default_value: [], value: [], preferences: {} }]] }
       )
     end
 
@@ -123,11 +130,28 @@ module Api
       values = values.except(phone_field_uuid)
 
       submitter.values = submitter.values.merge(values) if values.present?
-      submitter.completed_at = attrs[:completed] ? Time.current : submitter.completed_at
       submitter.metadata = attrs[:metadata] if attrs.key?(:metadata)
+
+      maybe_assign_completed_attributes(submitter, attrs)
 
       assign_external_id(submitter, attrs)
       assign_preferences(submitter, attrs)
+
+      submitter
+    end
+
+    def maybe_assign_completed_attributes(submitter, attrs)
+      submitter.completed_at = attrs[:completed] ? Time.current : submitter.completed_at
+
+      if attrs[:completed]
+        submitter.values = Submitters::SubmitValues.merge_default_values(submitter)
+        submitter.values = Submitters::SubmitValues.merge_formula_values(submitter)
+        submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(submitter)
+
+        submitter.values = submitter.values.transform_values do |v|
+          v == '{{date}}' ? Time.current.in_time_zone(submitter.account.timezone).to_date.to_s : v
+        end
+      end
 
       submitter
     end

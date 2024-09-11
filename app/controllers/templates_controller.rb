@@ -27,7 +27,7 @@ class TemplatesController < ApplicationController
   def edit
     ActiveRecord::Associations::Preloader.new(
       records: [@template],
-      associations: [schema_documents: { preview_images_attachments: :blob }]
+      associations: [schema_documents: [:blob, { preview_images_attachments: :blob }]]
     ).call
 
     @template_data =
@@ -43,6 +43,11 @@ class TemplatesController < ApplicationController
 
   def create
     if @base_template
+      ActiveRecord::Associations::Preloader.new(
+        records: [@base_template],
+        associations: [schema_documents: :preview_images_attachments]
+      ).call
+
       @template = Templates::Clone.call(@base_template, author: current_user,
                                                         name: params.dig(:template, :name),
                                                         folder_name: params[:folder_name])
@@ -53,7 +58,7 @@ class TemplatesController < ApplicationController
 
     if params[:account_id].present? && authorized_clone_account_id?(params[:account_id])
       @template.account_id = params[:account_id]
-      @template.folder = @template.account.default_template_folder
+      @template.folder = @template.account.default_template_folder if @template.account_id != current_account.id
     else
       @template.account = current_account
     end
@@ -61,7 +66,7 @@ class TemplatesController < ApplicationController
     if @template.save
       Templates::CloneAttachments.call(template: @template, original_template: @base_template) if @base_template
 
-      SendTemplateUpdatedWebhookRequestJob.perform_later(@template)
+      SendTemplateUpdatedWebhookRequestJob.perform_async('template_id' => @template.id)
 
       maybe_redirect_to_template(@template)
     else
@@ -72,7 +77,7 @@ class TemplatesController < ApplicationController
   def update
     @template.update!(template_params)
 
-    SendTemplateUpdatedWebhookRequestJob.perform_later(@template)
+    SendTemplateUpdatedWebhookRequestJob.perform_async('template_id' => @template.id)
 
     head :ok
   end
@@ -81,8 +86,6 @@ class TemplatesController < ApplicationController
     notice =
       if params[:permanently].present?
         @template.destroy!
-
-        Rollbar.info("Remove template: #{@template.id}") if defined?(Rollbar)
 
         'Template has been removed.'
       else
@@ -100,7 +103,7 @@ class TemplatesController < ApplicationController
     params.require(:template).permit(
       :name,
       { schema: [%i[attachment_uuid name]],
-        submitters: [%i[name uuid]],
+        submitters: [%i[name uuid is_requester linked_to_uuid email]],
         fields: [[:uuid, :submitter_uuid, :name, :type,
                   :required, :readonly, :default_value,
                   :title, :description,
@@ -120,7 +123,7 @@ class TemplatesController < ApplicationController
     if template.account == current_account
       redirect_to(edit_template_path(@template))
     else
-      redirect_back(fallback_location: root_path, notice: 'Template has been clonned')
+      redirect_back(fallback_location: root_path, notice: 'Template has been cloned')
     end
   end
 

@@ -5,7 +5,7 @@ module Submitters
     SERIALIZE_PARAMS = {
       methods: %i[status application_key],
       only: %i[id submission_id email phone name ua ip sent_at opened_at
-               completed_at created_at updated_at external_id metadata]
+               completed_at declined_at created_at updated_at external_id metadata]
     }.freeze
 
     module_function
@@ -30,11 +30,11 @@ module Submitters
                       'audit_log_url' => submitter.submission.audit_log_url,
                       'submission_url' => r.submissions_preview_url(submitter.submission.slug,
                                                                     **Docuseal.default_url_options),
-                      'template' => submitter.template.as_json(only: %i[id name external_id created_at
-                                                                        updated_at]),
+                      'template' => submitter.template.as_json(only: %i[id name external_id created_at updated_at],
+                                                               methods: %i[folder_name]),
                       'submission' => {
-                        **submitter.submission.slice(:id, :audit_log_url, :created_at),
-                        status: submitter.submission.submitters.all?(&:completed_at?) ? 'completed' : 'pending',
+                        **submitter.submission.slice(:id, :audit_log_url, :combined_document_url, :created_at),
+                        status: build_submission_status(submitter.submission),
                         url: r.submissions_preview_url(submitter.submission.slug, **Docuseal.default_url_options)
                       })
     end
@@ -48,6 +48,7 @@ module Submitters
         submitter_field_counters[field['type']] += 1
 
         next if field['submitter_uuid'] != submitter.uuid
+        next if field['type'] == 'heading'
 
         field_name =
           field['name'].presence || "#{field['type'].titleize} Field #{submitter_field_counters[field['type']]}"
@@ -60,6 +61,40 @@ module Submitters
       end
     end
 
+    def build_fields_array(submitter)
+      fields = submitter.submission.template_fields.presence || submitter.submission.template.fields
+      attachments_index = submitter.attachments.index_by(&:uuid)
+      submitter_field_counters = Hash.new { 0 }
+
+      fields.filter_map do |field|
+        submitter_field_counters[field['type']] += 1
+
+        next if field['submitter_uuid'] != submitter.uuid
+        next if field['type'] == 'heading'
+
+        field_name =
+          field['name'].presence || "#{field['type'].titleize} Field #{submitter_field_counters[field['type']]}"
+
+        next if !submitter.values.key?(field['uuid']) && !submitter.completed_at?
+
+        value = fetch_field_value(field, submitter.values[field['uuid']], attachments_index)
+
+        { name: field_name, uuid: field['uuid'], value: }
+      end
+    end
+
+    def build_submission_status(submission)
+      submitters = submission.submitters
+
+      if submitters.all?(&:completed_at?)
+        'completed'
+      elsif submitters.any?(&:declined_at?)
+        'declined'
+      else
+        submission.expired? ? 'expired' : 'pending'
+      end
+    end
+
     def build_documents_array(submitter)
       submitter.documents.map do |attachment|
         { name: attachment.filename.base, url: rails_storage_proxy_url(attachment) }
@@ -67,7 +102,7 @@ module Submitters
     end
 
     def fetch_field_value(field, value, attachments_index)
-      if field['type'].in?(%w[image signature initials stamp])
+      if field['type'].in?(%w[image signature initials stamp payment])
         rails_storage_proxy_url(attachments_index[value])
       elsif field['type'] == 'file'
         Array.wrap(value).compact_blank.filter_map { |e| rails_storage_proxy_url(attachments_index[e]) }

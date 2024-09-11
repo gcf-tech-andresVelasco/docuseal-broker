@@ -181,6 +181,10 @@ export default {
         spread: 140
       })
     }
+
+    if (window.decline_button) {
+      window.decline_button.setAttribute('disabled', 'true')
+    }
   },
   methods: {
     sendCopyToEmail () {
@@ -197,13 +201,18 @@ export default {
     download () {
       this.isDownloading = true
 
-      fetch(this.baseUrl + `/submitters/${this.submitterSlug}/download`).then((response) => response.json()).then((urls) => {
-        const isSafariIos = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+      fetch(this.baseUrl + `/submitters/${this.submitterSlug}/download`).then(async (response) => {
+        if (response.ok) {
+          const urls = await response.json()
+          const isSafariIos = /iPhone|iPad|iPod/i.test(navigator.userAgent)
 
-        if (isSafariIos && urls.length > 1) {
-          this.downloadSafariIos(urls)
+          if (isSafariIos && urls.length > 1) {
+            this.downloadSafariIos(urls)
+          } else {
+            this.downloadUrls(urls)
+          }
         } else {
-          this.downloadUrls(urls)
+          alert('Failed to download files')
         }
       })
     },

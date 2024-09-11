@@ -3,13 +3,13 @@
     class="absolute overflow-visible group"
     :style="positionStyle"
     @pointerdown.stop
-    @mousedown.stop="startDrag"
+    @mousedown="startMouseMove"
     @touchstart="startTouchDrag"
   >
     <div
       v-if="isSelected || isDraw"
       class="top-0 bottom-0 right-0 left-0 absolute border border-1.5 pointer-events-none"
-      :class="borderColors[submitterIndex]"
+      :class="field.type === 'heading' ? '' : borderColors[submitterIndex]"
     />
     <div
       v-if="field.type === 'cells' && (isSelected || isDraw)"
@@ -19,7 +19,7 @@
         v-for="(cellW, index) in cells"
         :key="index"
         class="absolute top-0 bottom-0 border-r"
-        :class="borderColors[submitterIndex]"
+        :class="field.type === 'heading' ? '' : borderColors[submitterIndex]"
         :style="{ left: (cellW / area.w * 100) + '%' }"
       >
         <span
@@ -31,14 +31,14 @@
       </div>
     </div>
     <div
-      v-if="field?.type"
-      class="absolute bg-white rounded-t border overflow-visible whitespace-nowrap group-hover:flex group-hover:z-10"
-      :class="{ 'flex z-10': isNameFocus || isSelected, invisible: !isNameFocus && !isSelected }"
+      v-if="field?.type && (isSelected || isNameFocus)"
+      class="absolute bg-white rounded-t border overflow-visible whitespace-nowrap flex z-10"
       style="top: -25px; height: 25px"
       @mousedown.stop
       @pointerdown.stop
     >
       <FieldSubmitter
+        v-if="field.type != 'heading'"
         v-model="field.submitter_uuid"
         class="border-r"
         :compact="true"
@@ -61,19 +61,21 @@
       <span
         v-if="field.type !== 'checkbox' || field.name"
         ref="name"
-        :contenteditable="editable && !defaultField"
+        :contenteditable="editable && !defaultField && field.type !== 'heading'"
         dir="auto"
         class="pr-1 cursor-text outline-none block"
         style="min-width: 2px"
+        @paste.prevent="onPaste"
         @keydown.enter.prevent="onNameEnter"
         @focus="onNameFocus"
         @blur="onNameBlur"
       >{{ optionIndexText }} {{ (defaultField ? (field.title || field.name) : field.name) || defaultName }}</span>
       <div
-        v-if="isSettingsFocus || (isNameFocus && !['checkbox', 'phone'].includes(field.type))"
+        v-if="isSettingsFocus || (isValueInput && field.type !== 'heading') || (isNameFocus && !['checkbox', 'phone'].includes(field.type))"
         class="flex items-center ml-1.5"
       >
         <input
+          v-if="!isValueInput"
           :id="`required-checkbox-${field.uuid}`"
           v-model="field.required"
           type="checkbox"
@@ -81,13 +83,30 @@
           @mousedown.prevent
         >
         <label
+          v-if="!isValueInput"
           :for="`required-checkbox-${field.uuid}`"
           class="label text-xs"
           @click.prevent="field.required = !field.required"
           @mousedown.prevent
         >{{ t('required') }}</label>
+        <input
+          v-if="isValueInput"
+          :id="`readonly-checkbox-${field.uuid}`"
+          type="checkbox"
+          class="checkbox checkbox-xs no-animation rounded"
+          :checked="!(field.readonly ?? true)"
+          @change="field.readonly = !(field.readonly ?? true)"
+          @mousedown.prevent
+        >
+        <label
+          v-if="isValueInput"
+          :for="`readonly-checkbox-${field.uuid}`"
+          class="label text-xs"
+          @click.prevent="field.readonly = !(field.readonly ?? true)"
+          @mousedown.prevent
+        >{{ t('editable') }}</label>
         <span
-          v-if="field.type !== 'payment'"
+          v-if="field.type !== 'payment' && !isValueInput"
           class="dropdown dropdown-end"
           @mouseenter="renderDropdown = true"
           @touchstart="renderDropdown = true"
@@ -138,23 +157,25 @@
       </button>
     </div>
     <div
+      ref="touchValueTarget"
       class="flex items-center h-full w-full"
       dir="auto"
-      :class="[bgColors[submitterIndex], field?.default_value ? (alignClasses[field.preferences?.align] || '') : 'justify-center']"
+      :class="[isValueInput ? 'bg-opacity-50' : 'bg-opacity-80', field.type === 'heading' ? 'bg-gray-50' : bgColors[submitterIndex], isDefaultValuePresent || isValueInput || (withFieldPlaceholder && field.areas) ? (alignClasses[field.preferences?.align] || '') : 'justify-center']"
+      @click="focusValueInput"
     >
       <span
         v-if="field"
-        class="flex justify-center items-center space-x-1 h-full"
-        :class="{'w-full h-full': field.type == 'checkbox'}"
+        class="flex justify-center items-center space-x-1"
+        :class="{ 'w-full': ['cells', 'checkbox'].includes(field.type), 'h-full': !isValueInput }"
       >
         <div
-          v-if="field?.default_value"
-          :class="{ 'w-full h-full': field.type == 'checkbox', 'text-[1.5vw] lg:text-base': !textOverflowChars, 'text-[1.0vw] lg:text-xs': textOverflowChars }"
+          v-if="isDefaultValuePresent || isValueInput || (withFieldPlaceholder && field.areas && field.type !== 'checkbox')"
+          :class="{ 'w-full h-full': ['cells', 'checkbox'].includes(field.type), 'text-[1.6vw] lg:text-base': !textOverflowChars, 'text-[1.0vw] lg:text-xs': textOverflowChars }"
         >
           <div
             ref="textContainer"
             class="flex items-center px-0.5"
-            :class="{'w-full h-full': field.type == 'checkbox'}"
+            :class="{ 'w-full h-full': ['cells', 'checkbox'].includes(field.type) }"
           >
             <IconCheck
               v-if="field.type == 'checkbox'"
@@ -162,12 +183,37 @@
               :class="{ '!w-auto !h-full': area.w > area.h, '!w-full !h-auto': area.w <= area.h }"
             />
             <span
-              v-else-if="field.type === 'number'"
+              v-else-if="field.type === 'number' && !isValueInput && (field.default_value || field.default_value == 0)"
               class="whitespace-pre-wrap"
             >{{ formatNumber(field.default_value, field.preferences?.format) }}</span>
             <span
+              v-else-if="field.default_value === '{{date}}'"
+            >
+              {{ t('signing_date') }}
+            </span>
+            <div
+              v-else-if="field.type === 'cells' && field.default_value"
+              class="w-full flex items-center"
+            >
+              <div
+                v-for="(char, index) in field.default_value"
+                :key="index"
+                class="text-center flex-none"
+                :style="{ width: (area.cell_w / area.w * 100) + '%' }"
+              >
+                {{ char }}
+              </div>
+            </div>
+            <span
               v-else
-              class="whitespace-pre-wrap"
+              ref="defaultValue"
+              :contenteditable="isValueInput"
+              class="whitespace-pre-wrap outline-none empty:before:content-[attr(placeholder)] before:text-gray-400"
+              :class="{ 'cursor-text': isValueInput }"
+              :placeholder="withFieldPlaceholder && !isValueInput ? field.name || defaultName : t('type_value')"
+              @blur="onDefaultValueBlur"
+              @paste.prevent="onPaste"
+              @keydown.enter="onDefaultValueEnter"
             >{{ field.default_value }}</span>
           </div>
         </div>
@@ -181,8 +227,12 @@
       </span>
     </div>
     <div
+      v-if="!isValueInput"
       ref="touchTarget"
-      class="absolute top-0 bottom-0 right-0 left-0 cursor-pointer"
+      class="absolute top-0 bottom-0 right-0 left-0"
+      :class="isDragged ? 'cursor-grab' : 'cursor-pointer'"
+      @dblclick="maybeToggleDefaultValue"
+      @click="maybeToggleCheckboxValue"
     />
     <span
       v-if="field?.type && editable"
@@ -255,6 +305,11 @@ export default {
       type: Object,
       required: true
     },
+    inputMode: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     isDraw: {
       type: Boolean,
       required: false,
@@ -264,6 +319,11 @@ export default {
       type: Object,
       required: false,
       default: null
+    },
+    withFieldPlaceholder: {
+      type: Boolean,
+      required: false,
+      default: false
     },
     defaultSubmitters: {
       type: Array,
@@ -286,10 +346,12 @@ export default {
     return {
       isShowFormulaModal: false,
       isShowConditionsModal: false,
+      isContenteditable: false,
       isSettingsFocus: false,
       isShowDescriptionModal: false,
       isResize: false,
       isDragged: false,
+      isMoved: false,
       renderDropdown: false,
       isNameFocus: false,
       textOverflowChars: 0,
@@ -299,6 +361,16 @@ export default {
   computed: {
     fieldNames: FieldType.computed.fieldNames,
     fieldIcons: FieldType.computed.fieldIcons,
+    isDefaultValuePresent () {
+      if (this.field?.type === 'radio' && this.field?.areas?.length > 1) {
+        return false
+      } else {
+        return this.field?.default_value || this.field?.default_value === 0
+      }
+    },
+    isValueInput () {
+      return (this.field.type === 'heading' && this.isSelected) || this.isContenteditable || (this.inputMode && ['text', 'number', 'date'].includes(this.field.type))
+    },
     modalContainerEl () {
       return this.$el.getRootNode().querySelector('#docuseal_modal_container')
     },
@@ -364,26 +436,26 @@ export default {
     },
     bgColors () {
       return [
-        'bg-red-100/80',
-        'bg-sky-100/80',
-        'bg-emerald-100/80',
-        'bg-yellow-100/80',
-        'bg-purple-100/80',
-        'bg-pink-100/80',
-        'bg-cyan-100/80',
-        'bg-orange-100/80',
-        'bg-lime-100/80',
-        'bg-indigo-100/80',
-        'bg-red-100/80',
-        'bg-sky-100/80',
-        'bg-emerald-100/80',
-        'bg-yellow-100/80',
-        'bg-purple-100/80',
-        'bg-pink-100/80',
-        'bg-cyan-100/80',
-        'bg-orange-100/80',
-        'bg-lime-100/80',
-        'bg-indigo-100/80'
+        'bg-red-100',
+        'bg-sky-100',
+        'bg-emerald-100',
+        'bg-yellow-100',
+        'bg-purple-100',
+        'bg-pink-100',
+        'bg-cyan-100',
+        'bg-orange-100',
+        'bg-lime-100',
+        'bg-indigo-100',
+        'bg-red-100',
+        'bg-sky-100',
+        'bg-emerald-100',
+        'bg-yellow-100',
+        'bg-purple-100',
+        'bg-pink-100',
+        'bg-cyan-100',
+        'bg-orange-100',
+        'bg-lime-100',
+        'bg-indigo-100'
       ]
     },
     isSelected () {
@@ -420,6 +492,43 @@ export default {
     buildDefaultName: Field.methods.buildDefaultName,
     closeDropdown () {
       document.activeElement.blur()
+    },
+    maybeToggleDefaultValue () {
+      if (['text', 'number'].includes(this.field.type)) {
+        this.isContenteditable = true
+
+        this.$nextTick(() => this.focusValueInput())
+      } else if (this.field.type === 'checkbox') {
+        this.field.readonly = !this.field.readonly
+        this.field.default_value === true ? delete this.field.default_value : this.field.default_value = true
+
+        this.save()
+      } else if (this.field.type === 'date') {
+        this.field.readonly = !this.field.readonly
+        this.field.default_value === '{{date}}' ? delete this.field.default_value : this.field.default_value = '{{date}}'
+
+        this.save()
+      }
+    },
+    maybeToggleCheckboxValue () {
+      if (this.inputMode && this.field.type === 'checkbox') {
+        this.field.readonly = !this.field.readonly
+        this.field.default_value === true ? delete this.field.default_value : this.field.default_value = true
+
+        this.save()
+      }
+    },
+    focusValueInput (e) {
+      if (this.$refs.defaultValue !== document.activeElement) {
+        this.$refs.defaultValue.focus()
+
+        if (this.$refs.defaultValue.innerText.length && this.$refs.defaultValue !== e?.target) {
+          window.getSelection().collapse(
+            this.$refs.defaultValue.firstChild,
+            this.$refs.defaultValue.innerText.length
+          )
+        }
+      }
     },
     formatNumber (number, format) {
       if (format === 'comma') {
@@ -463,6 +572,17 @@ export default {
 
       this.save()
     },
+    onPaste (e) {
+      const text = (e.clipboardData || window.clipboardData).getData('text/plain')
+
+      const selection = this.$el.getRootNode().getSelection()
+
+      if (selection.rangeCount) {
+        selection.deleteFromDocument()
+        selection.getRangeAt(0).insertNode(document.createTextNode(text))
+        selection.collapseToEnd()
+      }
+    },
     onResizeCell (e) {
       if (e.target.id === 'mask') {
         const positionX = e.offsetX / (e.target.clientWidth - 1)
@@ -477,6 +597,10 @@ export default {
 
       if (!['radio', 'multiple', 'select'].includes(this.field.type)) {
         delete this.field.options
+      }
+
+      if (['heading'].includes(this.field.type)) {
+        this.field.readonly = true
       }
 
       if (['select', 'multiple', 'radio'].includes(this.field.type)) {
@@ -510,6 +634,42 @@ export default {
 
       this.save()
     },
+    onDefaultValueBlur (e) {
+      const text = this.$refs.defaultValue.innerText.trim()
+
+      this.isContenteditable = false
+
+      if (text) {
+        if (this.field.type === 'number') {
+          const number = parseFloat(text)
+
+          if (number || number === 0) {
+            this.field.default_value = parseFloat(text)
+          }
+        } else {
+          this.field.default_value = text
+        }
+
+        if (![true, false].includes(this.field.readonly)) {
+          this.field.readonly = true
+        }
+
+        this.$refs.defaultValue.innerText = text
+      } else {
+        delete this.field.readonly
+        delete this.field.default_value
+        this.$refs.defaultValue.innerText = ''
+      }
+
+      this.save()
+    },
+    onDefaultValueEnter (e) {
+      if (this.field.type !== 'heading') {
+        e.preventDefault()
+
+        this.$refs.defaultValue.blur()
+      }
+    },
     onNameEnter (e) {
       this.$refs.name.blur()
     },
@@ -527,28 +687,12 @@ export default {
         this.area.y = (e.offsetY - this.dragFrom.y) / e.target.clientHeight
       }
     },
-    startDrag (e) {
-      this.selectedAreaRef.value = this.area
-
-      if (!this.editable) {
-        return
-      }
-
-      const rect = e.target.getBoundingClientRect()
-
-      this.dragFrom = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-
-      this.$el.getRootNode().addEventListener('mousemove', this.drag)
-      this.$el.getRootNode().addEventListener('mouseup', this.stopDrag)
-
-      this.$emit('start-drag')
-    },
     startTouchDrag (e) {
-      if (e.target !== this.$refs.touchTarget) {
+      if (e.target !== this.$refs.touchTarget && e.target !== this.$refs.touchValueTarget) {
         return
       }
 
-      this.$refs?.name?.blur()
+      document.activeElement?.blur()
 
       e.preventDefault()
 
@@ -566,11 +710,15 @@ export default {
       this.$emit('start-drag')
     },
     touchDrag (e) {
+      if (!this.editable) {
+        return
+      }
+
       const page = this.$parent.$refs.mask.previousSibling
       const rect = page.getBoundingClientRect()
 
-      this.area.x = (this.dragFrom.x + e.touches[0].clientX - rect.left) / rect.width
-      this.area.y = (this.dragFrom.y + e.touches[0].clientY - rect.top) / rect.height
+      this.area.x = Math.min(Math.max((this.dragFrom.x + e.touches[0].clientX - rect.left) / rect.width, 0), 1 - this.area.w)
+      this.area.y = Math.min(Math.max((this.dragFrom.y + e.touches[0].clientY - rect.top) / rect.height, 0), 1 - this.area.h)
     },
     stopTouchDrag () {
       this.$el.getRootNode().removeEventListener('touchmove', this.touchDrag)
@@ -581,6 +729,60 @@ export default {
       }
 
       this.isDragged = false
+
+      this.$emit('stop-drag')
+    },
+    startMouseMove (e) {
+      if (e.target !== this.$refs.touchTarget && e.target !== this.$refs.touchValueTarget) {
+        return
+      }
+
+      if (document.activeElement !== this.$refs.defaultValue) {
+        document.activeElement?.blur()
+      }
+
+      e.preventDefault()
+
+      this.isDragged = true
+
+      const rect = e.target.getBoundingClientRect()
+
+      this.selectedAreaRef.value = this.area
+
+      if (this.field.type === 'heading') {
+        this.$nextTick(() => this.focusValueInput())
+      }
+
+      this.dragFrom = { x: rect.left - e.clientX, y: rect.top - e.clientY }
+
+      this.$el.getRootNode().addEventListener('mousemove', this.mouseMove)
+      this.$el.getRootNode().addEventListener('mouseup', this.stopMouseMove)
+
+      this.$emit('start-drag')
+    },
+    mouseMove (e) {
+      if (!this.editable) {
+        return
+      }
+
+      this.isMoved = true
+
+      const page = this.$parent.$refs.mask.previousSibling
+      const rect = page.getBoundingClientRect()
+
+      this.area.x = Math.min(Math.max((this.dragFrom.x + e.clientX - rect.left) / rect.width, 0), 1 - this.area.w)
+      this.area.y = Math.min(Math.max((this.dragFrom.y + e.clientY - rect.top) / rect.height, 0), 1 - this.area.h)
+    },
+    stopMouseMove (e) {
+      this.$el.getRootNode().removeEventListener('mousemove', this.mouseMove)
+      this.$el.getRootNode().removeEventListener('mouseup', this.stopMouseMove)
+
+      if (this.isMoved) {
+        this.save()
+      }
+
+      this.isDragged = false
+      this.isMoved = false
 
       this.$emit('stop-drag')
     },

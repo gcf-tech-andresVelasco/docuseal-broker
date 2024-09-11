@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
+ActiveRecord::Schema[7.1].define(version: 2024_08_20_180922) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
 
@@ -64,7 +64,7 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.bigint "blob_id", null: false
     t.datetime "created_at", null: false
     t.index ["blob_id"], name: "index_active_storage_attachments_on_blob_id"
-    t.index ["record_type", "record_id", "name", "blob_id"], name: "index_active_storage_attachments_uniqueness", unique: true
+    t.index ["record_type", "record_id", "name", "blob_id"], name: "idx_on_record_type_record_id_name_blob_id_0be5805727"
     t.index ["uuid"], name: "index_active_storage_attachments_on_uuid"
   end
 
@@ -96,6 +96,23 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.datetime "updated_at", null: false
     t.index ["submitter_id", "event_name"], name: "index_document_generation_events_on_submitter_id_and_event_name", unique: true, where: "((event_name)::text = ANY ((ARRAY['start'::character varying, 'complete'::character varying])::text[]))"
     t.index ["submitter_id"], name: "index_document_generation_events_on_submitter_id"
+  end
+
+  create_table "email_events", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "emailable_type", null: false
+    t.bigint "emailable_id", null: false
+    t.string "message_id", null: false
+    t.string "tag", null: false
+    t.string "event_type", null: false
+    t.string "email", null: false
+    t.text "data", null: false
+    t.datetime "event_datetime", null: false
+    t.datetime "created_at", null: false
+    t.index ["account_id"], name: "index_email_events_on_account_id"
+    t.index ["email"], name: "index_email_events_on_email"
+    t.index ["emailable_type", "emailable_id"], name: "index_email_events_on_emailable"
+    t.index ["message_id"], name: "index_email_events_on_message_id"
   end
 
   create_table "email_messages", force: :cascade do |t|
@@ -132,6 +149,48 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.index ["user_id"], name: "index_encrypted_user_configs_on_user_id"
   end
 
+  create_table "oauth_access_grants", force: :cascade do |t|
+    t.bigint "resource_owner_id", null: false
+    t.bigint "application_id", null: false
+    t.string "token", null: false
+    t.integer "expires_in", null: false
+    t.text "redirect_uri", null: false
+    t.string "scopes", default: "", null: false
+    t.datetime "created_at", null: false
+    t.datetime "revoked_at"
+    t.index ["application_id"], name: "index_oauth_access_grants_on_application_id"
+    t.index ["resource_owner_id"], name: "index_oauth_access_grants_on_resource_owner_id"
+    t.index ["token"], name: "index_oauth_access_grants_on_token", unique: true
+  end
+
+  create_table "oauth_access_tokens", force: :cascade do |t|
+    t.bigint "resource_owner_id"
+    t.bigint "application_id", null: false
+    t.string "token", null: false
+    t.string "refresh_token"
+    t.integer "expires_in"
+    t.string "scopes"
+    t.datetime "created_at", null: false
+    t.datetime "revoked_at"
+    t.string "previous_refresh_token", default: "", null: false
+    t.index ["application_id"], name: "index_oauth_access_tokens_on_application_id"
+    t.index ["refresh_token"], name: "index_oauth_access_tokens_on_refresh_token", unique: true
+    t.index ["resource_owner_id"], name: "index_oauth_access_tokens_on_resource_owner_id"
+    t.index ["token"], name: "index_oauth_access_tokens_on_token", unique: true
+  end
+
+  create_table "oauth_applications", force: :cascade do |t|
+    t.string "name", null: false
+    t.string "uid", null: false
+    t.string "secret", null: false
+    t.text "redirect_uri"
+    t.string "scopes", default: "", null: false
+    t.boolean "confidential", default: true, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["uid"], name: "index_oauth_applications_on_uid", unique: true
+  end
+
   create_table "submission_events", force: :cascade do |t|
     t.bigint "submission_id", null: false
     t.bigint "submitter_id"
@@ -159,7 +218,8 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.string "slug", null: false
     t.text "preferences", null: false
     t.bigint "account_id", null: false
-    t.index ["account_id"], name: "index_submissions_on_account_id"
+    t.datetime "expire_at"
+    t.index ["account_id", "id"], name: "index_submissions_on_account_id_and_id"
     t.index ["created_by_user_id"], name: "index_submissions_on_created_by_user_id"
     t.index ["slug"], name: "index_submissions_on_slug", unique: true
     t.index ["template_id"], name: "index_submissions_on_template_id"
@@ -183,7 +243,11 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.string "external_id"
     t.text "preferences", null: false
     t.text "metadata", null: false
+    t.bigint "account_id", null: false
+    t.datetime "declined_at"
+    t.index ["account_id", "id"], name: "index_submitters_on_account_id_and_id"
     t.index ["email"], name: "index_submitters_on_email"
+    t.index ["external_id"], name: "index_submitters_on_external_id"
     t.index ["slug"], name: "index_submitters_on_slug", unique: true
     t.index ["submission_id"], name: "index_submitters_on_submission_id"
   end
@@ -226,6 +290,7 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.text "preferences", null: false
     t.index ["account_id"], name: "index_templates_on_account_id"
     t.index ["author_id"], name: "index_templates_on_author_id"
+    t.index ["external_id"], name: "index_templates_on_external_id"
     t.index ["folder_id"], name: "index_templates_on_folder_id"
     t.index ["slug"], name: "index_templates_on_slug", unique: true
   end
@@ -272,6 +337,17 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
     t.index ["uuid"], name: "index_users_on_uuid", unique: true
   end
 
+  create_table "webhook_urls", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.text "url", null: false
+    t.text "events", null: false
+    t.string "sha1", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_webhook_urls_on_account_id"
+    t.index ["sha1"], name: "index_webhook_urls_on_sha1"
+  end
+
   add_foreign_key "access_tokens", "users"
   add_foreign_key "account_configs", "accounts"
   add_foreign_key "account_linked_accounts", "accounts"
@@ -279,10 +355,15 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "document_generation_events", "submitters"
+  add_foreign_key "email_events", "accounts"
   add_foreign_key "email_messages", "accounts"
   add_foreign_key "email_messages", "users", column: "author_id"
   add_foreign_key "encrypted_configs", "accounts"
   add_foreign_key "encrypted_user_configs", "users"
+  add_foreign_key "oauth_access_grants", "oauth_applications", column: "application_id"
+  add_foreign_key "oauth_access_grants", "users", column: "resource_owner_id"
+  add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
+  add_foreign_key "oauth_access_tokens", "users", column: "resource_owner_id"
   add_foreign_key "submission_events", "submissions"
   add_foreign_key "submission_events", "submitters"
   add_foreign_key "submissions", "templates"
@@ -296,4 +377,5 @@ ActiveRecord::Schema[7.1].define(version: 2024_04_28_112400) do
   add_foreign_key "templates", "users", column: "author_id"
   add_foreign_key "user_configs", "users"
   add_foreign_key "users", "accounts"
+  add_foreign_key "webhook_urls", "accounts"
 end

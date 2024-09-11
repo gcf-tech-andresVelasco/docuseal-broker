@@ -50,6 +50,7 @@ class User < ApplicationRecord
   EMAIL_REGEXP = /[^@;,<>\s]+@[^@;,<>\s]+/
 
   has_one_attached :signature
+  has_one_attached :initials
 
   belongs_to :account
   has_one :access_token, dependent: :destroy
@@ -78,6 +79,12 @@ class User < ApplicationRecord
 
   def remember_me
     true
+  end
+
+  def sidekiq?
+    return true if Rails.env.development?
+
+    role == 'admin'
   end
 
   def self.sign_in_after_reset_password

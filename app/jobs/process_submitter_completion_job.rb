@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
-class ProcessSubmitterCompletionJob < ApplicationJob
-  def perform(submitter)
+class ProcessSubmitterCompletionJob
+  include Sidekiq::Job
+
+  def perform(params = {})
+    submitter = Submitter.find(params['submitter_id'])
+
     is_all_completed = !submitter.submission.submitters.exists?(completed_at: nil)
 
     if !is_all_completed && submitter.submission.submitters_order_preserved?
@@ -11,14 +15,47 @@ class ProcessSubmitterCompletionJob < ApplicationJob
     Submissions::EnsureResultGenerated.call(submitter)
 
     if is_all_completed && submitter.completed_at == submitter.submission.submitters.maximum(:completed_at)
+      if submitter.submission.account.account_configs.exists?(key: AccountConfig::COMBINE_PDF_RESULT_KEY, value: true)
+        Submissions::GenerateCombinedAttachment.call(submitter)
+      end
+
       Submissions::GenerateAuditTrail.call(submitter.submission)
 
       enqueue_completed_emails(submitter)
     end
 
-    return if Accounts.load_webhook_url(submitter.account).blank?
+    enqueue_completed_webhooks(submitter, is_all_completed:)
+  end
 
-    SendFormCompletedWebhookRequestJob.perform_later(submitter)
+  def enqueue_completed_webhooks(submitter, is_all_completed: false)
+    webhook_config = Accounts.load_webhook_config(submitter.account)
+
+    if webhook_config
+      SendFormCompletedWebhookRequestJob.perform_async({ 'submitter_id' => submitter.id,
+                                                         'encrypted_config_id' => webhook_config.id })
+    end
+
+    webhook_urls = submitter.account.webhook_urls
+
+    webhook_urls = webhook_urls.where(
+      Arel::Table.new(:webhook_urls)[:events].matches('%"form.completed"%')
+    ).or(
+      webhook_urls.where(
+        Arel::Table.new(:webhook_urls)[:events].matches('%"submission.completed"%')
+      )
+    )
+
+    webhook_urls.each do |webhook|
+      if webhook.events.include?('form.completed')
+        SendFormCompletedWebhookRequestJob.perform_async({ 'submitter_id' => submitter.id,
+                                                           'webhook_url_id' => webhook.id })
+      end
+
+      if webhook.events.include?('submission.completed') && is_all_completed
+        SendSubmissionCompletedWebhookRequestJob.perform_async({ 'submission_id' => submitter.submission_id,
+                                                                 'webhook_url_id' => webhook.id })
+      end
+    end
   end
 
   def enqueue_completed_emails(submitter)
@@ -26,26 +63,33 @@ class ProcessSubmitterCompletionJob < ApplicationJob
 
     user = submission.created_by_user || submitter.template.author
 
-    if submitter.account.users.exists?(id: user.id) && submission.preferences['send_email'] != false
+    if submitter.account.users.exists?(id: user.id) && submission.preferences['send_email'] != false &&
+       submitter.template.preferences['completed_notification_email_enabled'] != false
       if submission.submitters.map(&:email).exclude?(user.email) &&
          user.user_configs.find_by(key: UserConfig::RECEIVE_COMPLETED_EMAIL)&.value != false &&
          user.role != 'integration'
         SubmitterMailer.completed_email(submitter, user).deliver_later!
       end
 
-      bcc = submission.preferences['bcc_completed'].presence ||
-            submission.template.preferences['bcc_completed'].presence ||
-            submission.account.account_configs
-                      .find_by(key: AccountConfig::BCC_EMAILS)&.value
-
-      bcc.to_s.scan(User::EMAIL_REGEXP).each do |to|
+      build_bcc_addresses(submission).each do |to|
         SubmitterMailer.completed_email(submitter, user, to:).deliver_later!
       end
     end
 
     to = build_to_addresses(submitter)
 
-    SubmitterMailer.documents_copy_email(submitter, to:).deliver_later! if to.present?
+    return if to.blank? || submitter.template.preferences['documents_copy_email_enabled'] == false
+
+    SubmitterMailer.documents_copy_email(submitter, to:).deliver_later!
+  end
+
+  def build_bcc_addresses(submission)
+    bcc = submission.preferences['bcc_completed'].presence ||
+          submission.template.preferences['bcc_completed'].presence ||
+          submission.account.account_configs
+                    .find_by(key: AccountConfig::BCC_EMAILS)&.value
+
+    bcc.to_s.scan(User::EMAIL_REGEXP)
   end
 
   def build_to_addresses(submitter)

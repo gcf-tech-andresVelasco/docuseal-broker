@@ -3,10 +3,12 @@
 <% if !@pagy.count.zero? || params[:q].present? || params[:status].present? %>
   <div class="<%= is_show_tabs ? 'mb-4' : 'mb-6' %>">
     <div class="flex justify-between items-center md:items-end">
-      <p class="text-3xl font-bold">Submissions</p>
+      <div>
+        <h2 class="text-3xl font-bold md:block <%= 'hidden' if params[:q].present? %>">Submissions</h2>
+      </div>
       <div class="flex justify-end space-x-2">
         <% if params[:q].present? || params[:status].present? || @pagy.pages > 1 %>
-          <%= render 'shared/search_input' %>
+          <%= render 'shared/search_input', title_selector: 'h2' %>
         <% end %>
         <%= link_to new_template_submissions_export_path(@template), class: 'hidden md:flex btn btn-ghost text-base', data: { turbo_frame: 'modal' } do %>
           <%= svg_icon('download', class: 'w-6 h-6 stroke-2') %>
@@ -57,20 +59,6 @@
   <div class="space-y-4">
     <%= render partial: 'submission', collection: @submissions, locals: { template: @template } %>
   </div>
-  <% view_archived_html = capture do %>
-    <% if @template.submissions.where.not(archived_at: nil).exists? && !@template.archived_at? %>
-      <div>
-        <a href="<%= template_archived_index_path(@template) %>" class="link text-sm">View Archived</a>
-      </div>
-    <% end %>
-  <% end %>
-  <% if @pagy.pages > 1 %>
-    <%= render 'shared/pagination', pagy: @pagy, items_name: 'submissions', left_additional_html: view_archived_html %>
-  <% else %>
-    <div class="mt-2">
-      <%= view_archived_html %>
-    </div>
-  <% end %>
 <% else %>
   <div class="card bg-base-200">
     <div class="card-body text-center py-16">
@@ -100,5 +88,19 @@
         </div>
       </div>
     </div>
+  </div>
+<% end %>
+<% view_archived_html = capture do %>
+  <% if @template.submissions.where.not(archived_at: nil).exists? && !@template.archived_at? %>
+    <div>
+      <a href="<%= template_archived_index_path(@template) %>" class="link text-sm">View Archived</a>
+    </div>
+  <% end %>
+<% end %>
+<% if @pagy.pages > 1 %>
+  <%= render 'shared/pagination', pagy: @pagy, items_name: 'submissions', left_additional_html: view_archived_html %>
+<% else %>
+  <div class="mt-2">
+    <%= view_archived_html %>
   </div>
 <% end %>

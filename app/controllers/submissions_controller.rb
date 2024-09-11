@@ -39,10 +39,13 @@ class SubmissionsController < ApplicationController
                                            user: current_user,
                                            source: :invite,
                                            submitters_order: params[:preserve_order] == '1' ? 'preserved' : 'random',
-                                           mark_as_sent: params[:send_email] == '1',
                                            submissions_attrs: submissions_params[:submission].to_h.values,
                                            params: params.merge('send_completed_email' => true))
       end
+
+    submissions.each do |submission|
+      SendSubmissionCreatedWebhookRequestJob.perform_async({ 'submission_id' => submission.id })
+    end
 
     Submissions.send_signature_requests(submissions)
 
@@ -50,11 +53,20 @@ class SubmissionsController < ApplicationController
   end
 
   def destroy
-    @submission.update!(archived_at: Time.current)
+    notice =
+      if params[:permanently].present?
+        @submission.destroy!
 
-    SendSubmissionArchivedWebhookRequestJob.perform_later(@submission)
+        'Submission has been removed'
+      else
+        @submission.update!(archived_at: Time.current)
 
-    redirect_back(fallback_location: template_path(@submission.template), notice: 'Submission has been archived')
+        SendSubmissionArchivedWebhookRequestJob.perform_async('submission_id' => @submission.id)
+
+        'Submission has been archived'
+      end
+
+    redirect_back(fallback_location: template_path(@submission.template), notice:)
   end
 
   private

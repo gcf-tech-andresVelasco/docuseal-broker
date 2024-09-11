@@ -3,10 +3,10 @@
     class="field-area flex absolute lg:text-base -outline-offset-1"
     dir="auto"
     :style="computedStyle"
-    :class="{ 'text-[1.5vw] lg:text-base': !textOverflowChars, 'text-[1.0vw] lg:text-xs': textOverflowChars, 'cursor-default': !submittable, 'border border-red-100 bg-red-100 cursor-pointer': submittable, 'border border-red-100': !isActive && submittable, 'bg-opacity-80': !isActive && !isValueSet && submittable, 'field-area-active outline-red-500 outline-dashed outline-2 z-10': isActive && submittable, 'bg-opacity-40': (isActive || isValueSet) && submittable }"
+    :class="{ 'text-[1.6vw] lg:text-base': !textOverflowChars, 'text-[1.0vw] lg:text-xs': textOverflowChars, 'cursor-default': !submittable, 'border border-red-100 bg-red-100 cursor-pointer': submittable, 'border border-red-100': !isActive && submittable, 'bg-opacity-80': !isActive && !isValueSet && submittable, 'field-area-active outline-red-500 outline-dashed outline-2 z-10': isActive && submittable, 'bg-opacity-40': (isActive || isValueSet) && submittable }"
   >
     <div
-      v-if="!isActive && !isValueSet && field.type !== 'checkbox' && submittable && !area.option_uuid"
+      v-if="(!withFieldPlaceholder || !field.name || field.type === 'cells') && !isActive && !isValueSet && field.type !== 'checkbox' && submittable && !area.option_uuid"
       class="absolute top-0 bottom-0 right-0 left-0 items-center justify-center h-full w-full"
     >
       <span
@@ -41,7 +41,8 @@
     <div
       v-if="isActive"
       ref="scrollToElem"
-      class="absolute -top-20"
+      class="absolute"
+      :style="{ top: scrollPadding }"
     />
     <img
       v-if="field.type === 'image' && image"
@@ -53,18 +54,44 @@
       class="object-contain mx-auto"
       :src="stamp.url"
     >
-    <img
+    <div
       v-else-if="field.type === 'signature' && signature"
-      class="object-contain mx-auto"
-      :src="signature.url"
+      class="flex flex-col justify-between h-full overflow-hidden"
     >
+      <div
+        class="flex-grow flex overflow-hidden"
+        style="min-height: 50%"
+      >
+        <img
+          class="object-contain mx-auto"
+          :src="signature.url"
+        >
+      </div>
+      <div
+        v-if="withSignatureId"
+        class="w-full mt-1 text-[1vw] lg:text-[0.55rem] lg:leading-[0.65rem]"
+      >
+        <div class="truncate uppercase">
+          ID: {{ signature.uuid }}
+        </div>
+        <div>
+          {{ t('reason') }}: {{ values[field.preferences?.reason_field_uuid] || t('digitally_signed_by') }} {{ submitter.name }}
+          <template v-if="submitter.email">
+            &lt;{{ submitter.email }}&gt;
+          </template>
+        </div>
+        <div>
+          {{ new Date(signature.created_at).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: 'numeric', timeZoneName: 'short' }) }}
+        </div>
+      </div>
+    </div>
     <img
       v-else-if="field.type === 'initials' && initials"
       class="object-contain mx-auto"
       :src="initials.url"
     >
     <div
-      v-else-if="field.type === 'file' || field.type === 'payment'"
+      v-else-if="(field.type === 'file' || field.type === 'payment') && attachments.length"
       class="px-0.5 flex flex-col justify-center"
     >
       <a
@@ -74,7 +101,7 @@
         :href="attachment.url"
       >
         <IconPaperclip
-          class="inline w-[1.5vw] h-[1.5vw] lg:w-4 lg:h-4"
+          class="inline w-[1.6vw] h-[1.6vw] lg:w-4 lg:h-4"
         />
         {{ attachment.filename }}
       </a>
@@ -159,7 +186,12 @@
       class="flex items-center px-0.5 w-full"
       :class="alignClasses[field.preferences?.align]"
     >
-      <span v-if="Array.isArray(modelValue)">
+      <span
+        v-if="field && field.name && withFieldPlaceholder && !modelValue && modelValue !== 0"
+        class="whitespace-pre-wrap text-gray-400"
+        :class="{ 'w-full': field.preferences?.align }"
+      >{{ field.name }}</span>
+      <span v-else-if="Array.isArray(modelValue)">
         {{ modelValue.join(', ') }}
       </span>
       <span v-else-if="field.type === 'date'">
@@ -192,7 +224,27 @@ export default {
       type: Object,
       required: true
     },
+    submitter: {
+      type: Object,
+      required: false,
+      default: () => ({})
+    },
+    withSignatureId: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
     isValueSet: {
+      type: Boolean,
+      required: false,
+      default: false
+    },
+    scrollPadding: {
+      type: String,
+      required: false,
+      default: '-80px'
+    },
+    withFieldPlaceholder: {
       type: Boolean,
       required: false,
       default: false
@@ -206,6 +258,11 @@ export default {
       type: [Array, String, Number, Object, Boolean],
       required: false,
       default: ''
+    },
+    values: {
+      type: Object,
+      required: false,
+      default: () => ({})
     },
     isActive: {
       type: Boolean,
@@ -340,19 +397,25 @@ export default {
     computedStyle () {
       const { x, y, w, h } = this.area
 
-      return {
+      const style = {
         top: y * 100 + '%',
         left: x * 100 + '%',
         width: w * 100 + '%',
         height: h * 100 + '%'
       }
+
+      if (this.field.preferences?.font_size) {
+        style.fontSize = this.field.preferences.font_size + 'pt'
+      }
+
+      return style
     }
   },
   watch: {
     modelValue () {
       this.$nextTick(() => {
         if (['date', 'text', 'number'].includes(this.field.type) && this.$refs.textContainer && (this.textOverflowChars === 0 || (this.textOverflowChars - 4) > `${this.modelValue}`.length)) {
-          this.textOverflowChars = this.$refs.textContainer.scrollHeight > this.$refs.textContainer.clientHeight ? `${this.modelValue}`.length : 0
+          this.textOverflowChars = this.$refs.textContainer.scrollHeight > this.$refs.textContainer.clientHeight ? `${this.modelValue || (this.withFieldPlaceholder ? this.field.name : '')}`.length : 0
         }
       })
     }
@@ -360,7 +423,7 @@ export default {
   mounted () {
     this.$nextTick(() => {
       if (['date', 'text', 'number'].includes(this.field.type) && this.$refs.textContainer) {
-        this.textOverflowChars = this.$refs.textContainer.scrollHeight > this.$refs.textContainer.clientHeight ? `${this.modelValue}`.length : 0
+        this.textOverflowChars = this.$refs.textContainer.scrollHeight > this.$refs.textContainer.clientHeight ? `${this.modelValue || (this.withFieldPlaceholder ? this.field.name : '')}`.length : 0
       }
     })
   },

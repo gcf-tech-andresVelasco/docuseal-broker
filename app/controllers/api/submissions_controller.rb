@@ -19,10 +19,14 @@ module Api
 
       submissions = paginate(submissions.preload(:created_by_user, :submitters,
                                                  template: :folder,
+                                                 combined_document_attachment: :blob,
                                                  audit_trail_attachment: :blob))
 
       render json: {
-        data: submissions.as_json(serialize_params),
+        data: submissions.map do |s|
+          Submissions::SerializeForApi.call(s, s.submitters, params,
+                                            with_events: false, with_documents: false, with_values: false)
+        end,
         pagination: {
           count: submissions.size,
           next: submissions.last&.id,
@@ -44,29 +48,7 @@ module Api
         @submission.audit_trail_attachment = Submissions::GenerateAuditTrail.call(@submission)
       end
 
-      serialized_submitters = submitters.map { |submitter| Submitters::SerializeForApi.call(submitter) }
-
-      json = @submission.as_json(
-        serialize_params.deep_merge(
-          include: { submission_events: { only: %i[id submitter_id event_type event_timestamp] } }
-        )
-      )
-
-      if submitters.all?(&:completed_at?)
-        last_submitter = submitters.max_by(&:completed_at)
-
-        json[:documents] = serialized_submitters.find { |e| e['id'] == last_submitter.id }['documents']
-        json[:status] = 'completed'
-        json[:completed_at] = last_submitter.completed_at
-      else
-        json[:documents] = []
-        json[:status] = 'pending'
-        json[:completed_at] = nil
-      end
-
-      json[:submitters] = serialized_submitters
-
-      render json:
+      render json: Submissions::SerializeForApi.call(@submission, submitters, params)
     end
 
     def create
@@ -85,36 +67,50 @@ module Api
 
       submissions = create_submissions(@template, params)
 
+      submissions.each do |submission|
+        SendSubmissionCreatedWebhookRequestJob.perform_async({ 'submission_id' => submission.id })
+      end
+
       Submissions.send_signature_requests(submissions)
 
       submissions.each do |submission|
         if submission.submitters.all?(&:completed_at?) && submission.submitters.last
-          ProcessSubmitterCompletionJob.perform_later(submission.submitters.last)
+          ProcessSubmitterCompletionJob.perform_async({ 'submitter_id' => submission.submitters.last.id })
         end
       end
 
-      json = submissions.flat_map do |submission|
-        submission.submitters.map do |s|
-          Submitters::SerializeForApi.call(s, with_documents: false, with_urls: true)
-        end
-      end
-
-      render json:
-    rescue Submitters::NormalizeValues::BaseError => e
+      render json: build_create_json(submissions)
+    rescue Submitters::NormalizeValues::BaseError, DownloadUtils::UnableToDownload => e
       Rollbar.warning(e) if defined?(Rollbar)
 
       render json: { error: e.message }, status: :unprocessable_entity
     end
 
     def destroy
-      @submission.update!(archived_at: Time.current)
+      if params[:permanently] == 'true'
+        @submission.destroy!
+      else
+        @submission.update!(archived_at: Time.current)
 
-      SendSubmissionArchivedWebhookRequestJob.perform_later(@submission)
+        SendSubmissionArchivedWebhookRequestJob.perform_async('submission_id' => @submission.id)
+      end
 
-      render json: @submission.as_json(only: %i[id], methods: %i[archived_at])
+      render json: @submission.as_json(only: %i[id archived_at])
     end
 
     private
+
+    def build_create_json(submissions)
+      json = submissions.flat_map do |submission|
+        submission.submitters.map do |s|
+          Submitters::SerializeForApi.call(s, with_documents: false, with_urls: true, params:)
+        end
+      end
+
+      json = { submitters: json } if request.path.ends_with?('/init')
+
+      json
+    end
 
     def create_submissions(template, params)
       is_send_email = !params[:send_email].in?(['false', false])
@@ -135,7 +131,6 @@ module Api
           template:,
           user: current_user,
           source: :api,
-          mark_as_sent: is_send_email,
           submitters_order: params[:submitters_order] || params[:order] || 'preserved',
           submissions_attrs:,
           params:
@@ -153,25 +148,10 @@ module Api
       end
     end
 
-    def serialize_params
-      {
-        only: %i[id source submitters_order created_at updated_at archived_at],
-        methods: %i[audit_log_url],
-        include: {
-          submitters: { only: %i[id slug uuid name email phone
-                                 completed_at opened_at sent_at
-                                 created_at updated_at external_id metadata],
-                        methods: %i[status application_key] },
-          template: { only: %i[id name external_id created_at updated_at],
-                      methods: %i[folder_name] },
-          created_by_user: { only: %i[id email first_name last_name] }
-        }
-      }
-    end
-
     def submissions_params
       permitted_attrs = [
         :send_email, :send_sms, :bcc_completed, :completed_redirect_url, :reply_to, :go_to_last,
+        :expire_at,
         {
           message: %i[subject body],
           submitters: [[:send_email, :send_sms, :completed_redirect_url, :uuid, :name, :email, :role,
@@ -179,7 +159,7 @@ module Api
                         { metadata: {}, values: {}, readonly_fields: [], message: %i[subject body],
                           fields: [:name, :uuid, :default_value, :value, :title, :description,
                                    :readonly, :redacted, :validation_pattern, :invalid_message,
-                                   { default_value: [], value: [] }] }]]
+                                   { default_value: [], value: [], preferences: {} }] }]]
         }
       ]
 

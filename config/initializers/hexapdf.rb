@@ -11,9 +11,30 @@ module HexaPDF
         string_algorithm.encrypt(key, str).dup
       end
     end
+
+    module AES
+      module ClassMethods
+        def unpad(data)
+          padding_length = data.getbyte(-1)
+          if !padding_length || padding_length > BLOCK_SIZE || padding_length.zero? ||
+             data[-padding_length, padding_length].each_byte.any? { |byte| byte != padding_length }
+            data
+          else
+            data[0...-padding_length]
+          end
+        end
+      end
+    end
   end
 
   module Type
+    class Page
+      # fix NoMethodError (undefined method `color_space' for an instance of HexaPDF::Type::Page)
+      def color_space(name)
+        GlobalConfiguration.constantize('color_space.map', name).new
+      end
+    end
+
     # fix NoMethodError: undefined method `field_value' for #<HexaPDF::Type::AcroForm::Field
     module AcroForm
       class Field

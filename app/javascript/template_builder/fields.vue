@@ -1,5 +1,5 @@
 <template>
-  <div :class="withStickySubmitters ? 'sticky top-0 z-10' : ''">
+  <div :class="withStickySubmitters ? 'sticky top-0 z-[1]' : ''">
     <FieldSubmitter
       :model-value="selectedSubmitter.uuid"
       class="roles-dropdown w-full rounded-lg"
@@ -277,7 +277,7 @@ export default {
           return acc
         }, {})
       } else {
-        return this.fieldIcons
+        return Object.fromEntries(Object.entries(this.fieldIcons).filter(([key]) => key !== 'heading'))
       }
     },
     submitterFields () {

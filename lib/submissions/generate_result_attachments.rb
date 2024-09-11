@@ -11,7 +11,6 @@ module Submissions
                 end
 
     SIGN_REASON = 'Signed by %<name>s with DocuSeal.co'
-    SIGN_SIGNLE_REASON = 'Digitally signed with DocuSeal.co'
 
     RTL_REGEXP = TextUtils::RTL_REGEXP
 
@@ -22,10 +21,13 @@ module Submissions
     A4_SIZE = [595, 842].freeze
     SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg'].freeze
 
+    TESTING_FOOTER = 'Testing Document - NOT LEGALLY BINDING'
+
     MISSING_GLYPH_REPLACE = {
       '▪' => '-',
       '✔️' => 'V',
       '✔' => 'V',
+      '✓' => 'V',
       '✅' => 'V'
     }.freeze
 
@@ -33,6 +35,7 @@ module Submissions
       '▪' => :bullet,
       '✔️' => :V,
       '✔' => :V,
+      '✓' => :V,
       '✅' => :V
     }.freeze
 
@@ -40,20 +43,107 @@ module Submissions
 
     # rubocop:disable Metrics
     def call(submitter)
-      cell_layouter = HexaPDF::Layout::TextLayouter.new(text_valign: :center, text_align: :center)
+      pdfs_index = generate_pdfs(submitter)
 
       template = submitter.submission.template
+      account = submitter.account
+
+      pkcs = Accounts.load_signing_pkcs(account)
+      tsa_url = Accounts.load_timeserver_url(account)
+
+      image_pdfs = []
+      original_documents = template.documents.preload(:blob)
+
+      result_attachments =
+        submitter.submission.template_schema.map do |item|
+          pdf = pdfs_index[item['attachment_uuid']]
+
+          if original_documents.find { |a| a.uuid == item['attachment_uuid'] }.image?
+            pdf = normalize_image_pdf(pdf)
+
+            image_pdfs << pdf
+          end
+
+          build_pdf_attachment(pdf:, submitter:, pkcs:, tsa_url:,
+                               uuid: item['attachment_uuid'],
+                               name: item['name'])
+        end
+
+      return result_attachments.map { |e| e.tap(&:save!) } if image_pdfs.size < 2
+
+      images_pdf =
+        image_pdfs.each_with_object(HexaPDF::Document.new) do |pdf, doc|
+          pdf.pages.each { |page| doc.pages << doc.import(page) }
+        end
+
+      images_pdf = normalize_image_pdf(images_pdf)
+
+      images_pdf_attachment =
+        build_pdf_attachment(
+          pdf: images_pdf,
+          submitter:,
+          tsa_url:,
+          pkcs:,
+          uuid: images_pdf_uuid(original_documents.select(&:image?)),
+          name: template.name
+        )
+
+      (result_attachments + [images_pdf_attachment]).map { |e| e.tap(&:save!) }
+    end
+
+    def generate_pdfs(submitter)
+      cell_layouter = HexaPDF::Layout::TextLayouter.new(text_valign: :center, text_align: :center)
+
+      with_signature_id = submitter.account.account_configs
+                                   .exists?(key: AccountConfig::WITH_SIGNATURE_ID, value: true)
 
       is_flatten =
         submitter.account.account_configs
                  .find_or_initialize_by(key: AccountConfig::FLATTEN_RESULT_PDF_KEY).value != false
 
       account = submitter.account
-      pkcs = Accounts.load_signing_pkcs(account)
-      tsa_url = Accounts.load_timeserver_url(account)
       attachments_data_cache = {}
 
       pdfs_index = build_pdfs_index(submitter, flatten: is_flatten)
+
+      if with_signature_id || submitter.account.testing?
+        pdfs_index.each_value do |pdf|
+          next if pdf.trailer.info[:DocumentID].present?
+
+          font = pdf.fonts.add(FONT_NAME)
+
+          document_id = Digest::MD5.hexdigest(submitter.submission.slug).upcase
+
+          pdf.trailer.info[:DocumentID] = document_id
+          pdf.pages.each do |page|
+            font_size = (([page.box.width, page.box.height].min / A4_SIZE[0].to_f) * 9).to_i
+            cnv = page.canvas(type: :overlay)
+
+            text =
+              if submitter.account.testing?
+                if with_signature_id
+                  "#{TESTING_FOOTER} | ID: #{document_id}"
+                else
+                  TESTING_FOOTER
+                end
+              else
+                "Document ID: #{document_id}"
+              end
+
+            text = HexaPDF::Layout::TextFragment.create(
+              text, font:, font_size:, underlays: [
+                lambda do |canv, box|
+                  canv.fill_color('white').rectangle(-1, 0, box.width + 2, box.height).fill
+                end
+              ]
+            )
+
+            HexaPDF::Layout::TextLayouter.new(font:, font_size:)
+                                         .fit([text], page.box.width, page.box.height)
+                                         .draw(cnv, 1, font_size * 1.37)
+          end
+        end
+      end
 
       submitter.submission.template_fields.each do |field|
         next if field['submitter_uuid'] != submitter.uuid
@@ -78,7 +168,13 @@ module Submissions
 
           width = page.box.width
           height = page.box.height
-          font_size = (([page.box.width, page.box.height].min / A4_SIZE[0].to_f) * FONT_SIZE).to_i
+
+          preferences_font_size = field.dig('preferences', 'font_size').then { |num| num.present? ? num.to_i : nil }
+
+          font_size   = preferences_font_size
+          font_size ||= (([page.box.width, page.box.height].min / A4_SIZE[0].to_f) * FONT_SIZE).to_i
+
+          font = pdf.fonts.add(field.dig('preferences', 'font').presence || FONT_NAME)
 
           value = submitter.values[field['uuid']]
 
@@ -86,7 +182,7 @@ module Submissions
                        (value.to_s.match?(RTL_REGEXP) ? :right : :left)
 
           layouter = HexaPDF::Layout::TextLayouter.new(text_valign: :center, text_align:,
-                                                       font: pdf.fonts.add(FONT_NAME), font_size:)
+                                                       font:, font_size:)
 
           next if Array.wrap(value).compact_blank.blank?
 
@@ -102,6 +198,71 @@ module Submissions
           canvas.font(FONT_NAME, size: font_size)
 
           case field['type']
+          when ->(type) { type == 'signature' && (with_signature_id || field.dig('preferences', 'reason_field_uuid')) }
+            attachment = submitter.attachments.find { |a| a.uuid == value }
+
+            attachments_data_cache[attachment.uuid] ||= attachment.download
+
+            image = Vips::Image.new_from_buffer(attachments_data_cache[attachment.uuid], '').autorot
+
+            id_string = "ID: #{attachment.uuid}".upcase
+
+            while true
+              text = HexaPDF::Layout::TextFragment.create(id_string,
+                                                          font:,
+                                                          font_size: (font_size / 1.8).to_i)
+
+              result = layouter.fit([text], area['w'] * width, (font_size / 1.8) / 0.65)
+
+              break if result.status == :success
+
+              id_string = "#{id_string.delete_suffix('...')[0..-2]}..."
+
+              break if id_string.length < 8
+            end
+
+            reason_value = submitter.values[field.dig('preferences', 'reason_field_uuid')].presence
+
+            reason_string =
+              "#{I18n.t('reason')}: #{reason_value || I18n.t('digitally_signed_by')} " \
+              "#{submitter.name}#{submitter.email.present? ? " <#{submitter.email}>" : ''}\n" \
+              "#{I18n.l(attachment.created_at.in_time_zone(submitter.account.timezone),
+                        format: :long, locale: submitter.account.locale)} " \
+              "#{TimeUtils.timezone_abbr(submitter.account.timezone, attachment.created_at)}"
+
+            reason_text = HexaPDF::Layout::TextFragment.create(reason_string,
+                                                               font:,
+                                                               font_size: (font_size / 1.8).to_i)
+
+            reason_result = layouter.fit([reason_text], area['w'] * width, height)
+
+            text_height = result.lines.sum(&:height) + reason_result.lines.sum(&:height)
+
+            image_height = (area['h'] * height) - text_height
+            image_height = (area['h'] * height) / 2 if image_height < (area['h'] * height) / 2
+
+            scale = [(area['w'] * width) / image.width, image_height / image.height].min
+
+            io = StringIO.new(image.resize([scale * 4, 1].select(&:positive?).min).write_to_buffer('.png'))
+
+            layouter.fit([text], area['w'] * width, (font_size / 1.8) / 0.65)
+                    .draw(canvas, (area['x'] * width) + TEXT_LEFT_MARGIN,
+                          height - (area['y'] * height) - TEXT_TOP_MARGIN - image_height)
+
+            layouter.fit([reason_text], area['w'] * width, reason_result.lines.sum(&:height))
+                    .draw(canvas, (area['x'] * width) + TEXT_LEFT_MARGIN,
+                          height - (area['y'] * height) - TEXT_TOP_MARGIN -
+                          result.lines.sum(&:height) - image_height)
+
+            canvas.image(
+              io,
+              at: [
+                (area['x'] * width) + (area['w'] * width / 2) - ((image.width * scale) / 2),
+                height - (area['y'] * height) - (image.height * scale / 2) - (image_height / 2)
+              ],
+              width: image.width * scale,
+              height: image.height * scale
+            )
           when 'image', 'signature', 'initials', 'stamp'
             attachment = submitter.attachments.find { |a| a.uuid == value }
 
@@ -132,7 +293,7 @@ module Submissions
                 cv.image(PdfIcons.paperclip_io, at: [0, 0], width: box.content_width)
               end
 
-              acc << HexaPDF::Layout::TextFragment.create("#{attachment.filename}\n", font: pdf.fonts.add(FONT_NAME),
+              acc << HexaPDF::Layout::TextFragment.create("#{attachment.filename}\n", font:,
                                                                                       font_size:)
             end
 
@@ -197,14 +358,34 @@ module Submissions
               width: PdfIcons::WIDTH * scale,
               height: PdfIcons::HEIGHT * scale
             )
-          when ->(type) { type == 'cells' && area['cell_w'] }
+          when ->(type) { type == 'cells' && !area['cell_w'].to_i.zero? }
             cell_width = area['cell_w'] * width
 
             TextUtils.maybe_rtl_reverse(value).chars.each_with_index do |char, index|
-              text = HexaPDF::Layout::TextFragment.create(char, font: pdf.fonts.add(FONT_NAME),
+              next if char.blank?
+
+              text = HexaPDF::Layout::TextFragment.create(char, font:,
                                                                 font_size:)
 
-              cell_layouter.fit([text], cell_width, area['h'] * height)
+              line_height = layouter.fit([text], cell_width, height).lines.first.height
+
+              if preferences_font_size.blank? && line_height > (area['h'] * height)
+                text = HexaPDF::Layout::TextFragment.create(char,
+                                                            font:,
+                                                            font_size: (font_size / 1.4).to_i)
+
+                line_height = layouter.fit([text], cell_width, height).lines.first.height
+              end
+
+              if preferences_font_size.blank? && line_height > (area['h'] * height)
+                text = HexaPDF::Layout::TextFragment.create(char,
+                                                            font:,
+                                                            font_size: (font_size / 1.9).to_i)
+
+                line_height = layouter.fit([text], cell_width, height).lines.first.height
+              end
+
+              cell_layouter.fit([text], cell_width, [line_height, area['h'] * height].max)
                            .draw(canvas, ((area['x'] * width) + (cell_width * index)),
                                  height - (area['y'] * height))
             end
@@ -217,15 +398,15 @@ module Submissions
 
             value = TextUtils.maybe_rtl_reverse(Array.wrap(value).join(', '))
 
-            text = HexaPDF::Layout::TextFragment.create(value, font: pdf.fonts.add(FONT_NAME),
+            text = HexaPDF::Layout::TextFragment.create(value, font:,
                                                                font_size:)
 
             lines = layouter.fit([text], area['w'] * width, height).lines
             box_height = lines.sum(&:height)
 
-            if box_height > (area['h'] * height) + 1
+            if preferences_font_size.blank? && box_height > (area['h'] * height) + 1
               text = HexaPDF::Layout::TextFragment.create(value,
-                                                          font: pdf.fonts.add(FONT_NAME),
+                                                          font:,
                                                           font_size: (font_size / 1.4).to_i)
 
               lines = layouter.fit([text], field['type'].in?(%w[date number]) ? width : area['w'] * width, height).lines
@@ -233,9 +414,9 @@ module Submissions
               box_height = lines.sum(&:height)
             end
 
-            if box_height > (area['h'] * height) + 1
+            if preferences_font_size.blank? && box_height > (area['h'] * height) + 1
               text = HexaPDF::Layout::TextFragment.create(value,
-                                                          font: pdf.fonts.add(FONT_NAME),
+                                                          font:,
                                                           font_size: (font_size / 1.9).to_i)
 
               lines = layouter.fit([text], field['type'].in?(%w[date number]) ? width : area['w'] * width, height).lines
@@ -260,40 +441,7 @@ module Submissions
         end
       end
 
-      image_pdfs = []
-      original_documents = template.documents.preload(:blob)
-
-      result_attachments =
-        submitter.submission.template_schema.map do |item|
-          pdf = pdfs_index[item['attachment_uuid']]
-
-          attachment = build_pdf_attachment(pdf:, submitter:, pkcs:, tsa_url:,
-                                            uuid: item['attachment_uuid'],
-                                            name: item['name'])
-
-          image_pdfs << pdf if original_documents.find { |a| a.uuid == item['attachment_uuid'] }.image?
-
-          attachment
-        end
-
-      return result_attachments.map { |e| e.tap(&:save!) } if image_pdfs.size < 2
-
-      images_pdf =
-        image_pdfs.each_with_object(HexaPDF::Document.new) do |pdf, doc|
-          pdf.pages.each { |page| doc.pages << doc.import(page) }
-        end
-
-      images_pdf_attachment =
-        build_pdf_attachment(
-          pdf: images_pdf,
-          submitter:,
-          tsa_url:,
-          pkcs:,
-          uuid: images_pdf_uuid(original_documents.select(&:image?)),
-          name: template.name
-        )
-
-      (result_attachments + [images_pdf_attachment]).map { |e| e.tap(&:save!) }
+      pdfs_index
     end
 
     def build_pdf_attachment(pdf:, submitter:, pkcs:, tsa_url:, uuid:, name:)
@@ -316,6 +464,8 @@ module Submissions
 
           pdf.sign(io, write_options: { validate: false, incremental: false }, **sign_params)
         end
+
+        maybe_enable_ltv(io, sign_params)
       else
         begin
           pdf.write(io, incremental: true, validate: false)
@@ -325,16 +475,20 @@ module Submissions
           pdf.write(io, incremental: false, validate: false)
         end
       end
-      # rubocop:enable Metrics
 
       ActiveStorage::Attachment.new(
-        blob: ActiveStorage::Blob.create_and_upload!(io: StringIO.new(io.string), filename: "#{name}.pdf"),
+        blob: ActiveStorage::Blob.create_and_upload!(io: io.tap(&:rewind), filename: "#{name}.pdf"),
         metadata: { original_uuid: uuid,
                     analyzed: true,
                     sha256: Base64.urlsafe_encode64(Digest::SHA256.digest(io.string)) },
         name: 'documents',
         record: submitter
       )
+    end
+    # rubocop:enable Metrics
+
+    def maybe_enable_ltv(io, _sign_params)
+      io
     end
 
     def build_signing_params(pkcs, tsa_url)
@@ -376,7 +530,10 @@ module Submissions
 
         if flatten
           begin
+            pdf.acro_form.create_appearances(force: true) if pdf.acro_form && pdf.acro_form[:NeedAppearances]
             pdf.acro_form&.flatten
+          rescue HexaPDF::MissingGlyphError
+            nil
           rescue StandardError => e
             Rollbar.error(e) if defined?(Rollbar)
           end
@@ -409,7 +566,7 @@ module Submissions
     end
 
     def on_missing_glyph(character, font_wrapper)
-      Rollbar.error("Missing glyph: #{character}") if character.present? && defined?(Rollbar)
+      Rails.logger.info("Missing glyph: #{character}") if character.present? && defined?(Rollbar)
 
       replace_with =
         if font_wrapper.font_type == :Type1
@@ -449,12 +606,22 @@ module Submissions
       pdf
     end
 
+    def normalize_image_pdf(pdf)
+      io = StringIO.new
+      pdf.write(io)
+      io.rewind
+
+      HexaPDF::Document.new(io:)
+    end
+
     def sign_reason(name)
       format(SIGN_REASON, name:)
     end
 
-    def single_sign_reason
-      SIGN_SIGNLE_REASON
+    def single_sign_reason(submitter)
+      signers = submitter.submission.submitters.sort_by(&:completed_at).map { |s| s.email || s.name || s.phone }
+
+      format(SIGN_REASON, name: signers.reverse.join(', '))
     end
 
     def fetch_sign_reason(submitter)
@@ -463,16 +630,18 @@ module Submissions
       config =
         if Docuseal.multitenant?
           AccountConfig.where(account: submitter.account, key: AccountConfig::ESIGNING_PREFERENCE_KEY)
-                       .first_or_initialize(value: 'multiple')
+                       .first_or_initialize(value: 'single')
         else
           AccountConfig.where(key: AccountConfig::ESIGNING_PREFERENCE_KEY)
-                       .first_or_initialize(value: 'multiple')
+                       .first_or_initialize(value: 'single')
         end
 
       return sign_reason(reason_name) if config.value == 'multiple'
 
-      return single_sign_reason if !submitter.submission.submitters.exists?(completed_at: nil) &&
-                                   submitter.completed_at == submitter.submission.submitters.maximum(:completed_at)
+      if !submitter.submission.submitters.exists?(completed_at: nil) &&
+         submitter.completed_at == submitter.submission.submitters.maximum(:completed_at)
+        return single_sign_reason(submitter)
+      end
 
       nil
     end

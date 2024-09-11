@@ -14,7 +14,7 @@
         <div class="flex items-center p-1 space-x-1">
           <FieldType
             v-model="field.type"
-            :editable="editable && !defaultField"
+            :editable="editable && !defaultField && field.type != 'heading'"
             :button-width="20"
             :menu-classes="'mt-1.5'"
             :menu-style="{ backgroundColor: dropdownBgColor }"
@@ -24,7 +24,7 @@
           <Contenteditable
             ref="name"
             :model-value="(defaultField ? (field.title || field.name) : field.name) || defaultName"
-            :editable="editable && !defaultField"
+            :editable="editable && !defaultField && field.type != 'heading'"
             :icon-inline="true"
             :icon-width="18"
             :icon-stroke-width="1.6"
@@ -57,7 +57,7 @@
           class="flex items-center space-x-1"
         >
           <button
-            v-if="field && !field.areas.length"
+            v-if="field && !field.areas?.length"
             :title="t('draw')"
             class="relative cursor-pointer text-transparent group-hover:text-base-content"
             @click="$emit('set-draw', { field })"
@@ -92,9 +92,12 @@
           <PaymentSettings
             v-if="field.type === 'payment'"
             :field="field"
+            @click-condition="isShowConditionsModal = true"
+            @click-description="isShowDescriptionModal = true"
+            @click-formula="isShowFormulaModal = true"
           />
           <span
-            v-else
+            v-else-if="field.type !== 'heading'"
             class="dropdown dropdown-end"
             @mouseenter="renderDropdown = true"
             @touchstart="renderDropdown = true"
@@ -127,6 +130,7 @@
                 @click-description="isShowDescriptionModal = true"
                 @click-condition="isShowConditionsModal = true"
                 @set-draw="$emit('set-draw', $event)"
+                @remove-area="removeArea"
                 @scroll-to="$emit('scroll-to', $event)"
               />
             </ul>
@@ -278,7 +282,7 @@ export default {
     IconMathFunction,
     FieldType
   },
-  inject: ['template', 'save', 'backgroundColor', 'selectedAreaRef', 't'],
+  inject: ['template', 'save', 'backgroundColor', 'selectedAreaRef', 't', 'locale'],
   props: {
     field: {
       type: Object,
@@ -338,12 +342,17 @@ export default {
 
     if (this.field.type === 'date') {
       this.field.preferences.format ||=
-        (Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US') ? 'MM/DD/YYYY' : 'DD/MM/YYYY')
+       ({ 'de-DE': 'DD.MM.YYYY' }[this.locale] || ((Intl.DateTimeFormat().resolvedOptions().locale.endsWith('-US') || new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).format(new Date()).match(/\s(?:CST|CDT|PST|PDT|EST|EDT)$/)) ? 'MM/DD/YYYY' : 'DD/MM/YYYY'))
     }
   },
   methods: {
+    removeArea (area) {
+      this.field.areas.splice(this.field.areas.indexOf(area), 1)
+
+      this.save()
+    },
     buildDefaultName (field, fields) {
-      if (field.type === 'payment' && field.preferences?.price) {
+      if (field.type === 'payment' && field.preferences?.price && !field.preferences?.formula) {
         const { price, currency } = field.preferences || {}
 
         const formattedPrice = new Intl.NumberFormat([], {
@@ -355,9 +364,12 @@ export default {
       } else {
         const typeIndex = fields.filter((f) => f.type === field.type).indexOf(field)
 
-        const suffix = { multiple: this.t('select'), radio: this.t('group') }[field.type] || this.t('field')
-
-        return `${this.fieldNames[field.type]} ${suffix} ${typeIndex + 1}`
+        if (this.field.type === 'heading') {
+          return `${this.fieldNames[field.type]} ${typeIndex + 1}`
+        } else {
+          const suffix = { multiple: this.t('select'), radio: this.t('group') }[field.type] || this.t('field')
+          return `${this.fieldNames[field.type]} ${suffix} ${typeIndex + 1}`
+        }
       }
     },
     onNameFocus (e) {
@@ -413,6 +425,10 @@ export default {
 
       if (['radio', 'multiple', 'select'].includes(this.field.type)) {
         this.field.options ||= [{ value: '', uuid: v4() }]
+      }
+
+      if (['heading'].includes(this.field.type)) {
+        this.field.readonly = true
       }
 
       (this.field.areas || []).forEach((area) => {

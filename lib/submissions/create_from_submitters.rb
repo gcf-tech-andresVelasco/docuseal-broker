@@ -4,7 +4,7 @@ module Submissions
   module CreateFromSubmitters
     module_function
 
-    def call(template:, user:, submissions_attrs:, source:, submitters_order:, mark_as_sent: false, params: {})
+    def call(template:, user:, submissions_attrs:, source:, submitters_order:, params: {})
       preferences = Submitters.normalize_preferences(user.account, user, params)
 
       Array.wrap(submissions_attrs).filter_map do |attrs|
@@ -17,6 +17,7 @@ module Submissions
         submission = template.submissions.new(created_by_user: user, source:,
                                               account_id: user.account_id,
                                               preferences: set_submission_preferences,
+                                              expire_at: attrs[:expire_at],
                                               template_submitters: [], submitters_order:)
 
         maybe_set_template_fields(submission, attrs[:submitters])
@@ -32,7 +33,7 @@ module Submissions
           is_order_sent = submitters_order == 'random' || index.zero?
 
           build_submitter(submission:, attrs: submitter_attrs, uuid:,
-                          is_order_sent:, mark_as_sent:, user:,
+                          is_order_sent:, user:,
                           preferences: preferences.merge(submission_preferences))
         end
 
@@ -130,6 +131,8 @@ module Submissions
         end
       end
 
+      field['preferences'] = (field['preferences'] || {}).merge(attrs['preferences']) if attrs['preferences'].present?
+
       return field if attrs['validation_pattern'].blank?
 
       field['validation'] = {
@@ -147,30 +150,53 @@ module Submissions
       uuid || template.submitters[index]&.dig('uuid')
     end
 
-    def build_submitter(submission:, attrs:, uuid:, is_order_sent:, mark_as_sent:, user:, preferences:)
+    def build_submitter(submission:, attrs:, uuid:, is_order_sent:, user:, preferences:)
       email = Submissions.normalize_email(attrs[:email])
       submitter_preferences = Submitters.normalize_preferences(submission.account, user, attrs)
       values = attrs[:values] || {}
 
-      phone_field_uuid =
-        (submission.template_fields || submission.template.fields).find do |f|
-          values[f['uuid']].present? && f['type'] == 'phone'
-        end&.dig('uuid')
+      phone_field_uuid = find_phone_field(submission, values)&.dig('uuid')
 
-      submission.submitters.new(
-        email:,
-        phone: (attrs[:phone] || values[phone_field_uuid]).to_s.gsub(/[^0-9+]/, ''),
-        name: attrs[:name],
-        external_id: attrs[:external_id].presence || attrs[:application_key],
-        completed_at: attrs[:completed].present? ? Time.current : nil,
-        sent_at: mark_as_sent && email.present? && is_order_sent ? Time.current : nil,
-        values: values.except(phone_field_uuid),
-        metadata: attrs[:metadata] || {},
-        preferences: preferences.merge(submitter_preferences)
-                                .merge({ default_values: attrs[:values] }.compact_blank)
-                                .except('bcc_completed'),
-        uuid:
-      )
+      submitter =
+        submission.submitters.new(
+          email:,
+          phone: (attrs[:phone] || values[phone_field_uuid]).to_s.gsub(/[^0-9+]/, ''),
+          name: attrs[:name],
+          account_id: user.account_id,
+          external_id: attrs[:external_id].presence || attrs[:application_key],
+          completed_at: attrs[:completed].present? ? Time.current : nil,
+          values: values.except(phone_field_uuid),
+          metadata: attrs[:metadata] || {},
+          preferences: preferences.merge(submitter_preferences)
+                                  .merge({ default_values: attrs[:values] }.compact_blank)
+                                  .except('bcc_completed'),
+          uuid:
+        )
+
+      submitter.sent_at =
+        submitter.preferences['send_email'] != false && email.present? && is_order_sent ? Time.current : nil
+
+      assign_completed_attributes(submitter) if submitter.completed_at?
+
+      submitter
+    end
+
+    def find_phone_field(submission, values)
+      (submission.template_fields || submission.template.fields).find do |f|
+        values[f['uuid']].present? && f['type'] == 'phone'
+      end
+    end
+
+    def assign_completed_attributes(submitter)
+      submitter.values = Submitters::SubmitValues.merge_default_values(submitter)
+      submitter.values = Submitters::SubmitValues.merge_formula_values(submitter)
+      submitter.values = Submitters::SubmitValues.maybe_remove_condition_values(submitter)
+
+      submitter.values = submitter.values.transform_values do |v|
+        v == '{{date}}' ? Time.current.in_time_zone(submitter.submission.account.timezone).to_date.to_s : v
+      end
+
+      submitter
     end
   end
 end

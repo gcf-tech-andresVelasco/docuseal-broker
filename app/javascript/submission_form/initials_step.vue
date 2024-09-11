@@ -50,6 +50,26 @@
             </span>
           </a>
         </span>
+        <span
+          class="tooltip"
+          :data-tip="t('click_to_upload')"
+        >
+          <label
+            class="btn btn-outline btn-sm font-medium inline-flex flex-nowrap"
+          >
+            <IconUpload :width="16" />
+            <input
+              :key="uploadImageInputKey"
+              type="file"
+              hidden
+              accept="image/*"
+              @change="drawImage"
+            >
+            <span class="hidden sm:inline">
+              {{ t('upload') }}
+            </span>
+          </label>
+        </span>
         <a
           v-if="modelValue || computedPreviousValue"
           href="#"
@@ -97,7 +117,7 @@
     <img
       v-if="modelValue || computedPreviousValue"
       :src="attachmentsIndex[modelValue || computedPreviousValue].url"
-      class="mx-auto bg-white border border-base-300 rounded max-h-72"
+      class="mx-auto bg-white border border-base-300 rounded max-h-44"
     >
     <canvas
       v-show="!modelValue && !computedPreviousValue"
@@ -120,16 +140,18 @@
 
 <script>
 import { cropCanvasAndExportToPNG } from './crop_canvas'
-import { IconReload, IconTextSize, IconSignature, IconArrowsDiagonalMinimize2 } from '@tabler/icons-vue'
+import { IconReload, IconTextSize, IconUpload, IconSignature, IconArrowsDiagonalMinimize2 } from '@tabler/icons-vue'
 import SignaturePad from 'signature_pad'
 import AppearsOn from './appears_on'
 import MarkdownContent from './markdown_content'
+import SignatureStep from './signature_step'
 
 const scale = 3
 
 export default {
   name: 'InitialsStep',
   components: {
+    IconUpload,
     AppearsOn,
     IconReload,
     IconTextSize,
@@ -142,6 +164,11 @@ export default {
     field: {
       type: Object,
       required: true
+    },
+    dryRun: {
+      type: Boolean,
+      required: false,
+      default: false
     },
     submitterSlug: {
       type: String,
@@ -173,7 +200,8 @@ export default {
     return {
       isInitialsStarted: !!this.previousValue,
       isUsePreviousValue: true,
-      isDrawInitials: false
+      isDrawInitials: false,
+      uploadImageInputKey: Math.random().toString()
     }
   },
   computed: {
@@ -189,7 +217,7 @@ export default {
     this.$nextTick(() => {
       if (this.$refs.canvas) {
         this.$refs.canvas.width = this.$refs.canvas.parentNode.clientWidth * scale
-        this.$refs.canvas.height = (this.$refs.canvas.parentNode.clientWidth / 3) * scale
+        this.$refs.canvas.height = (this.$refs.canvas.parentNode.clientWidth / 4.5) * scale
 
         this.$refs.canvas.getContext('2d').scale(scale, scale)
       }
@@ -208,7 +236,7 @@ export default {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
             this.$refs.canvas.width = this.$refs.canvas.parentNode.clientWidth * scale
-            this.$refs.canvas.height = (this.$refs.canvas.parentNode.clientWidth / 3) * scale
+            this.$refs.canvas.height = (this.$refs.canvas.parentNode.clientWidth / 4.5) * scale
 
             this.$refs.canvas.getContext('2d').scale(scale, scale)
 
@@ -224,6 +252,15 @@ export default {
     this.intersectionObserver?.disconnect()
   },
   methods: {
+    drawOnCanvas: SignatureStep.methods.drawOnCanvas,
+    drawImage (event) {
+      this.remove()
+      this.isInitialsStarted = true
+
+      this.drawOnCanvas(event.target.files[0], this.$refs.canvas)
+
+      this.uploadImageInputKey = Math.random().toString()
+    },
     remove () {
       this.$emit('update:model-value', '')
 
@@ -246,13 +283,28 @@ export default {
       const context = canvas.getContext('2d')
 
       const fontFamily = 'Arial'
-      const fontSize = '44px'
+      const initialFontSize = 50
       const fontStyle = 'italic'
       const fontWeight = ''
 
-      context.font = fontStyle + ' ' + fontWeight + ' ' + fontSize + ' ' + fontFamily
-      context.textAlign = 'center'
+      const setFontSize = (size) => {
+        context.font = `${fontStyle} ${fontWeight} ${size}px ${fontFamily}`
+      }
 
+      const adjustFontSizeToFit = (text, maxWidth, initialSize) => {
+        let size = initialSize
+
+        setFontSize(size)
+
+        while (context.measureText(text).width > maxWidth && size > 1) {
+          size -= 1
+          setFontSize(size)
+        }
+      }
+
+      adjustFontSizeToFit(e.target.value, canvas.width / scale, initialFontSize)
+
+      context.textAlign = 'center'
       context.clearRect(0, 0, canvas.width / scale, canvas.height / scale)
       context.fillText(e.target.value, canvas.width / 2 / scale, canvas.height / 2 / scale + 11)
     },
@@ -282,21 +334,36 @@ export default {
         cropCanvasAndExportToPNG(this.$refs.canvas).then(async (blob) => {
           const file = new File([blob], 'initials.png', { type: 'image/png' })
 
-          const formData = new FormData()
+          if (this.dryRun) {
+            const reader = new FileReader()
 
-          formData.append('file', file)
-          formData.append('submitter_slug', this.submitterSlug)
-          formData.append('name', 'attachments')
+            reader.readAsDataURL(file)
 
-          return fetch(this.baseUrl + '/api/attachments', {
-            method: 'POST',
-            body: formData
-          }).then((resp) => resp.json()).then((attachment) => {
-            this.$emit('attached', attachment)
-            this.$emit('update:model-value', attachment.uuid)
+            reader.onloadend = () => {
+              const attachment = { url: reader.result, uuid: Math.random().toString() }
 
-            return resolve(attachment)
-          })
+              this.$emit('attached', attachment)
+              this.$emit('update:model-value', attachment.uuid)
+
+              resolve(attachment)
+            }
+          } else {
+            const formData = new FormData()
+
+            formData.append('file', file)
+            formData.append('submitter_slug', this.submitterSlug)
+            formData.append('name', 'attachments')
+
+            return fetch(this.baseUrl + '/api/attachments', {
+              method: 'POST',
+              body: formData
+            }).then((resp) => resp.json()).then((attachment) => {
+              this.$emit('attached', attachment)
+              this.$emit('update:model-value', attachment.uuid)
+
+              return resolve(attachment)
+            })
+          }
         })
       })
     }

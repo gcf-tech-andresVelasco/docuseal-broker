@@ -7,5 +7,6 @@
   </head>
   <body dir="<%= TextUtils.rtl?(yield) ? 'rtl' : 'auto' %>">
     <%= yield %>
+    <%= render partial: 'shared/mailer_attribution' %>
   </body>
 </html>

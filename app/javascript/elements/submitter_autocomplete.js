@@ -24,6 +24,7 @@ export default class extends HTMLElement {
 
       if (input && item[field]) {
         input.value = item[field]
+        input.dispatchEvent(new CustomEvent('linked-input.update', { bubbles: true }))
       }
 
       if (textarea && item[field]) {
@@ -45,11 +46,7 @@ export default class extends HTMLElement {
       this.currentFetch.then(async (resp) => {
         const items = await resp.json()
 
-        if (q.length < 3) {
-          resolve(items.filter((e) => e[this.dataset.field].startsWith(q)))
-        } else {
-          resolve(items)
-        }
+        resolve(items)
       }).catch(() => {
         resolve([])
       }).finally(() => {

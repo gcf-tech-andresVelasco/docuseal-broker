@@ -8,7 +8,7 @@
   </div>
 </h1>
 <h3 align="center">
-  Open source document filling and signing for companies
+  Open source document filling and signing
 </h3>
 <p align="center">
   <a href="https://hub.docker.com/r/docuseal/docuseal">

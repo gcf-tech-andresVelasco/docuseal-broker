@@ -12,7 +12,6 @@ module Submissions
                   'Helvetica'
                 end
 
-    SIGN_REASON = 'Signed with DocuSeal.co'
     VERIFIED_TEXT = 'Verified'
     UNVERIFIED_TEXT = 'Unverified'
 
@@ -21,6 +20,8 @@ module Submissions
       'EUR' => '€',
       'GBP' => '£'
     }.freeze
+
+    TESTING_FOOTER = GenerateResultAttachments::TESTING_FOOTER
 
     RTL_REGEXP = TextUtils::RTL_REGEXP
     MAX_IMAGE_HEIGHT = 100
@@ -31,9 +32,37 @@ module Submissions
 
     # rubocop:disable Metrics
     def call(submission)
+      document = build_audit_trail(submission)
+
       account = submission.account
+
       pkcs = Accounts.load_signing_pkcs(account)
       tsa_url = Accounts.load_timeserver_url(account)
+
+      io = StringIO.new
+
+      document.trailer.info[:Creator] = "#{Docuseal.product_name} (#{Docuseal::PRODUCT_URL})"
+
+      sign_params = {
+        reason: sign_reason,
+        **Submissions::GenerateResultAttachments.build_signing_params(pkcs, tsa_url)
+      }
+
+      document.sign(io, **sign_params)
+
+      Submissions::GenerateResultAttachments.maybe_enable_ltv(io, sign_params)
+
+      ActiveStorage::Attachment.create!(
+        blob: ActiveStorage::Blob.create_and_upload!(
+          io: io.tap(&:rewind), filename: "Audit Log - #{submission.template.name}.pdf"
+        ),
+        name: 'audit_trail',
+        record: submission
+      )
+    end
+
+    def build_audit_trail(submission)
+      account = submission.account
       verify_url = Rails.application.routes.url_helpers.settings_esign_url(**Docuseal.default_url_options)
       page_size =
         if TimeUtils.timezone_abbr(account.timezone, Time.current.beginning_of_year).in?(US_TIMEZONES)
@@ -75,7 +104,44 @@ module Submissions
                 .rectangle(0, 0, box.width, 20)
                 .rectangle(0, box.height - 20, box.width, 20)
                 .fill
+
+          maybe_add_background(canvas, submission, page_size)
         end
+
+        with_signature_id = submission.account.account_configs
+                                      .exists?(key: AccountConfig::WITH_SIGNATURE_ID, value: true)
+
+        if with_signature_id || submission.account.testing?
+          canvas.save_graphics_state do
+            document_id = Digest::MD5.hexdigest(submission.slug).upcase
+
+            font = composer.document.fonts.add(FONT_NAME)
+
+            text =
+              if submission.account.testing?
+                if with_signature_id
+                  "#{TESTING_FOOTER} | ID: #{document_id}"
+                else
+                  TESTING_FOOTER
+                end
+              else
+                "Document ID: #{document_id}"
+              end
+
+            text = HexaPDF::Layout::TextFragment.create(
+              text, font:, font_size: FONT_SIZE, underlays: [
+                lambda do |canv, box|
+                  canv.fill_color('white').rectangle(-1, 0, box.width + 2, box.height).fill
+                end
+              ]
+            )
+
+            HexaPDF::Layout::TextLayouter.new(font:, font_size: FONT_SIZE)
+                                         .fit([text], 1000, 1000)
+                                         .draw(canvas, 1, FONT_SIZE * 1.37)
+          end
+        end
+
         style.frame = style.create_frame(canvas.context, 50)
       end
 
@@ -197,6 +263,7 @@ module Submissions
 
         submission.template_fields.filter_map do |field|
           next if field['submitter_uuid'] != submitter.uuid
+          next if field['type'] == 'heading'
 
           submitter_field_counters[field['type']] += 1
 
@@ -204,16 +271,18 @@ module Submissions
 
           next if Array.wrap(value).compact_blank.blank?
 
+          field_name = field['title'].presence || field['name'].to_s
+
           [
             composer.formatted_text_box(
               [
                 {
-                  text: TextUtils.maybe_rtl_reverse(field['name'].to_s).upcase.presence ||
+                  text: TextUtils.maybe_rtl_reverse(field_name).upcase.presence ||
                         "#{field['type']} Field #{submitter_field_counters[field['type']]}\n".upcase,
                   font_size: 6
                 }
               ].compact_blank,
-              text_align: field['name'].to_s.match?(RTL_REGEXP) ? :right : :left,
+              text_align: field_name.to_s.match?(RTL_REGEXP) ? :right : :left,
               line_spacing: 1.3, padding: [0, 0, 2, 0]
             ),
             if field['type'].in?(%w[image signature initials stamp])
@@ -299,25 +368,14 @@ module Submissions
 
       composer.table(events_data, cell_style: { padding: [0, 0, 12, 0], border: { width: 0 } }) if events_data.present?
 
-      io = StringIO.new
-
-      composer.document.trailer.info[:Creator] = "#{Docuseal.product_name} (#{Docuseal::PRODUCT_URL})"
-
-      sign_params = {
-        reason: SIGN_REASON,
-        **Submissions::GenerateResultAttachments.build_signing_params(pkcs, tsa_url)
-      }
-
-      composer.document.sign(io, **sign_params)
-
-      ActiveStorage::Attachment.create!(
-        blob: ActiveStorage::Blob.create_and_upload!(
-          io: StringIO.new(io.string), filename: "Audit Log - #{submission.template.name}.pdf"
-        ),
-        name: 'audit_trail',
-        record: submission
-      )
+      composer.document
     end
+
+    def sign_reason
+      'Signed with DocuSeal.co'
+    end
+
+    def maybe_add_background(_canvas, _submission, _page_size); end
 
     def add_logo(column, _submission = nil)
       column.image(PdfIcons.logo_io, width: 40, height: 40, position: :float)

@@ -31,6 +31,17 @@ module Accounts
     new_account
   end
 
+  def users_count(account)
+    rel = User.where(account_id: account.id).or(
+      User.where(account_id: account.account_linked_accounts
+                                           .where.not(account_type: :testing)
+                                           .select(:linked_account_id))
+    )
+
+    rel.where.not(account: account.linked_accounts.where.not(archived_at: nil))
+       .where.not(role: :integration).active.count
+  end
+
   def find_or_create_testing_user(account)
     user = User.where(role: :admin).order(:id).find_by(account: account.testing_accounts)
 
@@ -68,13 +79,17 @@ module Accounts
   end
 
   def load_webhook_url(account)
+    load_webhook_config(account)&.value.presence
+  end
+
+  def load_webhook_config(account)
     configs = account.encrypted_configs.find_by(key: EncryptedConfig::WEBHOOK_URL_KEY)
 
-    unless Docuseal.multitenant?
-      configs ||= Account.order(:id).first.encrypted_configs.find_by(key: EncryptedConfig::WEBHOOK_URL_KEY)
+    if !configs && !Docuseal.multitenant? && !account.testing?
+      configs = Account.order(:id).first.encrypted_configs.find_by(key: EncryptedConfig::WEBHOOK_URL_KEY)
     end
 
-    configs&.value.presence
+    configs
   end
 
   def load_webhook_preferences(account)
@@ -120,6 +135,29 @@ module Accounts
 
       url
     end.presence
+  end
+
+  def load_trusted_certs(account)
+    cert_data =
+      if Docuseal.multitenant?
+        value = EncryptedConfig.find_by(account:, key: EncryptedConfig::ESIGN_CERTS_KEY)&.value || {}
+
+        Docuseal::CERTS.merge(value)
+      else
+        EncryptedConfig.find_by(key: EncryptedConfig::ESIGN_CERTS_KEY)&.value || {}
+      end
+
+    default_pkcs = GenerateCertificate.load_pkcs(cert_data)
+
+    custom_certs = cert_data.fetch('custom', []).map do |e|
+      OpenSSL::PKCS12.new(Base64.urlsafe_decode64(e['data']), e['password'].to_s)
+    end
+
+    [default_pkcs.certificate,
+     *default_pkcs.ca_certs,
+     *custom_certs.map(&:certificate),
+     *custom_certs.flat_map(&:ca_certs).compact,
+     *Docuseal.trusted_certs]
   end
 
   def can_send_emails?(_account, **_params)

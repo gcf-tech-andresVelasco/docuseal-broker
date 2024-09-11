@@ -4,11 +4,13 @@ class TemplateDocumentsController < ApplicationController
   load_and_authorize_resource :template
 
   def create
-    return head :unprocessable_entity if params[:blobs].blank? && params[:files].blank?
+    if params[:blobs].blank? && params[:files].blank?
+      return render json: { error: 'File is missing' }, status: :unprocessable_entity
+    end
 
     old_fields_hash = @template.fields.hash
 
-    documents = Templates::CreateAttachments.call(@template, params)
+    documents = Templates::CreateAttachments.call(@template, params, extract_fields: true)
 
     schema = documents.map do |doc|
       { attachment_uuid: doc.uuid, name: doc.filename.base }

@@ -2,10 +2,11 @@
 
 source 'https://rubygems.org'
 
-ruby '3.3.1'
+ruby '3.3.4'
 
 gem 'arabic-letter-connector', require: 'arabic-letter-connector/logic'
 gem 'aws-sdk-s3', require: false
+gem 'aws-sdk-secretsmanager', require: false
 gem 'azure-storage-blob', require: false
 gem 'bootsnap', require: false
 gem 'cancancan'
@@ -22,13 +23,13 @@ gem 'image_processing'
 gem 'jwt'
 gem 'lograge'
 gem 'mysql2', require: false
+gem 'net-smtp', '0.4.0'
 gem 'oj'
 gem 'pagy'
-gem 'pdf-reader'
 gem 'pg', require: false
 gem 'premailer-rails'
 gem 'pretender'
-gem 'puma'
+gem 'puma', require: false
 gem 'rack'
 gem 'rails'
 gem 'rails_autolink'
@@ -38,7 +39,7 @@ gem 'rqrcode'
 gem 'ruby-vips'
 gem 'rubyXL'
 gem 'shakapacker'
-gem 'sidekiq', require: ENV.key?('REDIS_URL')
+gem 'sidekiq'
 gem 'sqlite3', require: false, force_ruby_platform: true
 gem 'strip_attributes'
 gem 'turbo-rails'

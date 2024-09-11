@@ -14,14 +14,14 @@ module Submitters
       unless submitter.submission_events.exists?(event_type: 'start_form')
         SubmissionEvents.create_with_tracking_data(submitter, 'start_form', request)
 
-        SendFormStartedWebhookRequestJob.perform_later(submitter)
+        SendFormStartedWebhookRequestJob.perform_async({ 'submitter_id' => submitter.id })
       end
 
       update_submitter!(submitter, params, request)
 
       submitter.submission.save!
 
-      ProcessSubmitterCompletionJob.perform_later(submitter) if submitter.completed_at?
+      ProcessSubmitterCompletionJob.perform_async({ 'submitter_id' => submitter.id }) if submitter.completed_at?
 
       submitter
     end
@@ -32,18 +32,10 @@ module Submitters
       submitter.values.merge!(values)
       submitter.opened_at ||= Time.current
 
-      if params[:completed] == 'true'
-        submitter.completed_at = Time.current
-        submitter.ip = request.remote_ip
-        submitter.ua = request.user_agent
-        submitter.values = merge_default_values(submitter)
-        submitter.values = merge_formula_values(submitter)
-        submitter.values = submitter.values.transform_values do |v|
-          v == '{{date}}' ? Time.current.in_time_zone(submitter.account.timezone).to_date.to_s : v
-        end
-      end
+      assign_completed_attributes(submitter, request) if params[:completed] == 'true'
 
       ApplicationRecord.transaction do
+        maybe_set_signature_reason!(values, submitter, params)
         validate_values!(values, submitter, params, request)
 
         SubmissionEvents.create_with_tracking_data(submitter, 'complete_form', request) if params[:completed] == 'true'
@@ -52,6 +44,45 @@ module Submitters
       end
 
       submitter
+    end
+
+    def assign_completed_attributes(submitter, request)
+      submitter.completed_at = Time.current
+      submitter.ip = request.remote_ip
+      submitter.ua = request.user_agent
+      submitter.values = merge_default_values(submitter)
+      submitter.values = merge_formula_values(submitter)
+      submitter.values = maybe_remove_condition_values(submitter)
+      submitter.values = submitter.values.transform_values do |v|
+        v == '{{date}}' ? Time.current.in_time_zone(submitter.account.timezone).to_date.to_s : v
+      end
+
+      submitter
+    end
+
+    def maybe_set_signature_reason!(values, submitter, params)
+      return if params[:with_reason].blank?
+
+      reason_field_uuid = params[:with_reason]
+      signature_field_uuid = values.except(reason_field_uuid).keys.first
+
+      signature_field = submitter.submission.template_fields.find { |e| e['uuid'] == signature_field_uuid }
+
+      signature_field['preferences'] ||= {}
+      signature_field['preferences']['reason_field_uuid'] = reason_field_uuid
+
+      unless submitter.submission.template_fields.find { |e| e['uuid'] == reason_field_uuid }
+        reason_field = { 'type' => 'text',
+                         'uuid' => reason_field_uuid,
+                         'name' => I18n.t(:reason),
+                         'readonly' => true,
+                         'submitter_uuid' => submitter.uuid }
+
+        submitter.submission.template_fields.insert(submitter.submission.template_fields.index(signature_field) + 1,
+                                                    reason_field)
+      end
+
+      submitter.submission.save!
     end
 
     def normalized_values(params)
@@ -82,8 +113,10 @@ module Submitters
 
         if field['type'] == 'stamp'
           acc[field['uuid']] ||=
-            Submitters::CreateStampAttachment.call(submitter,
-                                                   with_logo: field.dig('preferences', 'with_logo') != false).uuid
+            Submitters::CreateStampAttachment.build_attachment(
+              submitter,
+              with_logo: field.dig('preferences', 'with_logo') != false
+            ).uuid
 
           next
         end
@@ -101,6 +134,7 @@ module Submitters
     def merge_formula_values(submitter)
       computed_values = submitter.submission.template_fields.each_with_object({}) do |field, acc|
         next if field['submitter_uuid'] != submitter.uuid
+        next if field['type'] == 'payment'
 
         formula = field.dig('preferences', 'formula')
 
@@ -126,6 +160,47 @@ module Submitters
                                 submitter.attributes.merge('role' => role),
                                 submitter.submission,
                                 with_time:)
+    end
+
+    def maybe_remove_condition_values(submitter)
+      fields_uuid_index = submitter.submission.template_fields.index_by { |e| e['uuid'] }
+
+      submitter.submission.template_fields.each do |field|
+        next if field['submitter_uuid'] != submitter.uuid
+
+        submitter.values.delete(field['uuid']) unless check_field_condition(submitter, field, fields_uuid_index)
+      end
+
+      submitter.values
+    end
+
+    def check_field_condition(submitter, field, fields_uuid_index)
+      return true if field['conditions'].blank?
+
+      submitter_values = submitter.values
+
+      field['conditions'].reduce(true) do |acc, c|
+        case c['action']
+        when 'empty', 'unchecked'
+          acc && submitter_values[c['field_uuid']].blank?
+        when 'not_empty', 'checked'
+          acc && submitter_values[c['field_uuid']].present?
+        when 'equal', 'contains'
+          field = fields_uuid_index[c['field_uuid']]
+          option = field['options'].find { |o| o['uuid'] == c['value'] }
+          values = Array.wrap(submitter_values[c['field_uuid']])
+
+          acc && values.include?(option['value'].presence || "Option #{field['options'].index(option)}")
+        when 'not_equal', 'does_not_contain'
+          field = fields_uuid_index[c['field_uuid']]
+          option = field['options'].find { |o| o['uuid'] == c['value'] }
+          values = Array.wrap(submitter_values[c['field_uuid']])
+
+          acc && values.exclude?(option['value'].presence || "Option #{field['options'].index(option)}")
+        else
+          acc
+        end
+      end
     end
 
     def replace_default_variables(value, attrs, submission, with_time: false)

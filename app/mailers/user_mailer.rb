@@ -6,7 +6,9 @@ class UserMailer < ApplicationMailer
     @user = user
     @token = @user.send(:set_reset_password_token)
 
+    assign_message_metadata('user_invitation', @user)
+
     mail(to: @user.friendly_name,
-         subject: 'You are invited to DocuSeal')
+         subject: "You are invited to #{Docuseal.product_name}")
   end
 end
