@@ -89,6 +89,7 @@
           type="hidden"
         >
         <div class="md:mt-4">
+        <div class="mb-2 italic text-sm"><span>Enter here the requested information corresponding to the area indicated in the document with a red dashed line / </span> <span>Introduzca aquí la información solicitada correspondiente al área indicada en el documento con una línea discontinua roja.</span></div>
           <div v-if="['cells', 'text'].includes(currentField.type)">
             <TextStep
               :key="currentField.uuid"

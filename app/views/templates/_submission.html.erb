@@ -40,6 +40,7 @@
                   Expired
                 </span>
               </div>
+
             <% else %>
               <div class="tooltip flex" data-tip="<%= l(submitter.status_event_at.in_time_zone(current_account.timezone), format: :short, locale: current_account.locale) %>">
                 <span class="badge <%= status_badges[submitter.status] %> md:w-32 badge-lg bg-opacity-50 uppercase text-sm font-semibold">
@@ -50,6 +51,9 @@
             <span class="text-lg break-all flex items-center">
               <%= submitter.name || submitter.email || submitter.phone %>
             </span>
+            <span style="background: #7080909e;color: white;padding: 4px 12px;border-radius: 4px;margin: 0px 8px;">
+              <%= l(submitter.status_event_at.in_time_zone(current_account.timezone), format: :short, locale: current_account.locale) %>
+             </span>
           </span>
         </div>
       </div>
@@ -130,6 +134,9 @@
                   <span class="text-lg break-all">
                     <%= submitter.name || submitter.email || submitter.phone %>
                   </span>
+                  <span style="background: #7080909e;color: white;padding: 4px 12px;border-radius: 4px;margin: 0px 8px;">
+                    <%= l(submitter.status_event_at.in_time_zone(current_account.timezone), format: :short, locale: current_account.locale) %>
+                   </span>
                 </span>
                 <% if submitter.completed_at? && !is_submission_completed %>
                   <form onsubmit="event.preventDefault()">
